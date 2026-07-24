@@ -9,7 +9,7 @@ export async function GET() {
     return NextResponse.json({ products });
   } catch (error) {
     console.error('Failed to fetch products:', error);
-    return NextResponse.json({ error: 'Failed to fetch' }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Failed to fetch products' }, { status: 500 });
   }
 }
 
@@ -36,6 +36,6 @@ export async function PUT(req: Request) {
     return NextResponse.json({ success: true, product: updatedProduct });
   } catch (error) {
     console.error('Failed to update product:', error);
-    return NextResponse.json({ error: 'Failed to update product' }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Failed to update product' }, { status: 500 });
   }
 }
