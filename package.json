@@ -19,7 +19,7 @@
     "publish": {
       "provider": "github",
       "owner": "handaeyeon",
-      "repo": "serch"
+      "repo": "bell"
     },
     "win": {
       "target": "nsis",
