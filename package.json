@@ -16,6 +16,7 @@
     "asar": false,
     "appId": "com.search.app",
     "productName": "SEARCH",
+    "artifactName": "SEARCH_Setup.exe",
     "win": {
       "target": "nsis",
       "executableName": "SearchSolution"
