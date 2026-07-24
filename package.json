@@ -1,6 +1,6 @@
 {
   "name": "search",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "repository": "https://github.com/Dieod1598741/search",
   "private": true,
   "main": "main.js",
@@ -20,7 +20,8 @@
     "publish": {
       "provider": "github",
       "owner": "Dieod1598741",
-      "repo": "search"
+      "repo": "search",
+      "releaseType": "release"
     },
     "win": {
       "target": "nsis",
