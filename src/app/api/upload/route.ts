@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as xlsx from 'xlsx';
-import prisma from '@/lib/prisma';
+import pool from '@/lib/db';
 
 export async function POST(req: NextRequest) {
   try {
@@ -37,7 +37,6 @@ export async function POST(req: NextRequest) {
     if (nameIdx === -1) nameIdx = 1; 
     if (priceIdx === -1) priceIdx = 6; 
 
-    await prisma.product.deleteMany();
     const productsToInsert = [];
 
     for (let i = 1; i < data.length; i++) {
@@ -55,7 +54,7 @@ export async function POST(req: NextRequest) {
       const barcode = barcodeIdx !== -1 && row[barcodeIdx] ? String(row[barcodeIdx]).trim() : null;
       const supplier = supplierIdx !== -1 && row[supplierIdx] ? String(row[supplierIdx]).trim() : null;
 
-      productsToInsert.push({
+      productsToInsert.push([
         name,
         spec,
         barcode,
@@ -63,12 +62,26 @@ export async function POST(req: NextRequest) {
         purchasePrice,
         currentPrice,
         stock
-      });
+      ]);
     }
 
-    await prisma.product.createMany({
-      data: productsToInsert,
-    });
+    // Delete existing records
+    await pool.query('DELETE FROM "Product"');
+
+    // Insert new records using parameterized queries for bulk insert
+    if (productsToInsert.length > 0) {
+      const valuesStr = [];
+      const params = [];
+      let idx = 1;
+      
+      for (const p of productsToInsert) {
+        valuesStr.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+        params.push(...p);
+      }
+      
+      const query = `INSERT INTO "Product" (name, spec, barcode, supplier, "purchasePrice", "currentPrice", stock) VALUES ${valuesStr.join(', ')}`;
+      await pool.query(query, params);
+    }
 
     return NextResponse.json({ success: true, count: productsToInsert.length });
   } catch (error) {

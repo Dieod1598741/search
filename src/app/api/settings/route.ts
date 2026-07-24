@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import prisma from '@/lib/prisma';
+import pool from '@/lib/db';
 
 export async function GET() {
   try {
-    const settings = await prisma.setting.findMany();
+    const { rows: settings } = await pool.query('SELECT * FROM "Setting"');
     const config = settings.reduce((acc: Record<string, string>, curr) => {
       acc[curr.id] = curr.value;
       return acc;
@@ -21,19 +21,17 @@ export async function POST(req: NextRequest) {
     const { naverClientId, naverClientSecret } = await req.json();
 
     if (naverClientId !== undefined) {
-      await prisma.setting.upsert({
-        where: { id: 'NAVER_CLIENT_ID' },
-        update: { value: naverClientId },
-        create: { id: 'NAVER_CLIENT_ID', value: naverClientId }
-      });
+      await pool.query(
+        `INSERT INTO "Setting" (id, value) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value`,
+        ['NAVER_CLIENT_ID', naverClientId]
+      );
     }
 
     if (naverClientSecret !== undefined) {
-      await prisma.setting.upsert({
-        where: { id: 'NAVER_CLIENT_SECRET' },
-        update: { value: naverClientSecret },
-        create: { id: 'NAVER_CLIENT_SECRET', value: naverClientSecret }
-      });
+      await pool.query(
+        `INSERT INTO "Setting" (id, value) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value`,
+        ['NAVER_CLIENT_SECRET', naverClientSecret]
+      );
     }
 
     return NextResponse.json({ success: true });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import prisma from '@/lib/prisma';
+import pool from '@/lib/db';
 
 export async function POST(req: NextRequest) {
   try {
@@ -9,13 +9,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No IDs provided' }, { status: 400 });
     }
 
-    await prisma.product.deleteMany({
-      where: {
-        id: {
-          in: ids,
-        },
-      },
-    });
+    // Use parameterized query with ANY for array
+    await pool.query('DELETE FROM "Product" WHERE id = ANY($1::int[])', [ids]);
 
     return NextResponse.json({ success: true });
   } catch (error) {

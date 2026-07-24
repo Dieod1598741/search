@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import prisma from '@/lib/prisma';
+import pool from '@/lib/db';
 import axios from 'axios';
 
 // Naver keys will be fetched dynamically from the database
@@ -32,9 +32,8 @@ export async function POST(req: NextRequest) {
   try {
     const { productId } = await req.json();
     
-    const product = await prisma.product.findUnique({
-      where: { id: productId }
-    });
+    const { rows: productRows } = await pool.query('SELECT * FROM "Product" WHERE id = $1', [productId]);
+    const product = productRows[0];
 
     if (!product) {
       return NextResponse.json({ error: 'Product not found' }, { status: 404 });
@@ -52,7 +51,7 @@ export async function POST(req: NextRequest) {
     const query = product.spec ? `${product.name} ${product.spec}` : product.name;
     
     // Fetch settings from database
-    const settings = await prisma.setting.findMany();
+    const { rows: settings } = await pool.query('SELECT * FROM "Setting"');
     const config = settings.reduce((acc: Record<string, string>, curr) => {
       acc[curr.id] = curr.value;
       return acc;
@@ -137,21 +136,22 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Direct Coupang Scraping removed due to Akamai 403 WAF blocks
-
-    const updateData: any = { lastCheckedAt: new Date() };
+    const updates: string[] = ['"lastCheckedAt" = $1'];
+    const values: any[] = [new Date()];
+    let paramIdx = 2;
     
     if (fetchSuccess) {
-      updateData.naverPrice = naverPrice;
-      updateData.naverLink = naverLink;
-      updateData.coupangPrice = coupangPrice;
-      updateData.coupangLink = coupangLink;
+      if (naverPrice !== null) { updates.push(`"naverPrice" = $${paramIdx++}`); values.push(naverPrice); }
+      if (naverLink !== null) { updates.push(`"naverLink" = $${paramIdx++}`); values.push(naverLink); }
+      if (coupangPrice !== null) { updates.push(`"coupangPrice" = $${paramIdx++}`); values.push(coupangPrice); }
+      if (coupangLink !== null) { updates.push(`"coupangLink" = $${paramIdx++}`); values.push(coupangLink); }
     }
 
-    const updatedProduct = await prisma.product.update({
-      where: { id: productId },
-      data: updateData
-    });
+    values.push(productId);
+    const queryStr = `UPDATE "Product" SET ${updates.join(', ')} WHERE id = $${paramIdx} RETURNING *`;
+    
+    const { rows: updatedRows } = await pool.query(queryStr, values);
+    const updatedProduct = updatedRows[0];
 
     return NextResponse.json({ success: true, product: updatedProduct });
   } catch (error) {
