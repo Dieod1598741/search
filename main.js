@@ -10,6 +10,17 @@ const dev = !app.isPackaged;
 if (!dev) {
   process.env.DATABASE_URL = Buffer.from('cG9zdGdyZXNxbDovL3Bvc3RncmVzLnNram9mb2x0b2t4d3d6aXVjcmhvOmdvemxkdGxmZ2VrMTJAYXdzLTEtYXAtc291dGgtMS5wb29sZXIuc3VwYWJhc2UuY29tOjY1NDMvcG9zdGdyZXM/cGdib3VuY2VyPXRydWU=', 'base64').toString('utf-8');
   process.env.DIRECT_URL = Buffer.from('cG9zdGdyZXNxbDovL3Bvc3RncmVzLnNram9mb2x0b2t4d3d6aXVjcmhvOmdvemxkdGxmZ2VrMTJAYXdzLTEtYXAtc291dGgtMS5wb29sZXIuc3VwYWJhc2UuY29tOjU0MzIvcG9zdGdyZXM=', 'base64').toString('utf-8');
+  
+  // Packaged app runs with process.cwd() as the executable folder (e.g. C:\Program Files\SEARCH)
+  // We must change it to __dirname (resources/app) so Prisma and Next.js can resolve node_modules
+  process.chdir(__dirname);
+  
+  // Explicitly tell Prisma where the engines are located
+  const enginePath = path.join(__dirname, 'node_modules', '@prisma', 'engines', 'schema-engine-windows.exe');
+  const queryEnginePath = path.join(__dirname, 'node_modules', '@prisma', 'engines', 'query_engine-windows.dll.node');
+  process.env.PRISMA_QUERY_ENGINE_LIBRARY = queryEnginePath;
+  process.env.PRISMA_SCHEMA_ENGINE_BINARY = enginePath;
+  process.env.PRISMA_QUERY_ENGINE_BINARY = queryEnginePath;
 }
 
 // next() 디렉토리 설정. 
