@@ -1,0 +1,37 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "windows"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Product {
+  id            Int      @id @default(autoincrement())
+  name          String
+  spec          String?  // 규격
+  barcode       String?
+  supplier      String?  // 공급사
+  purchasePrice Int?     // 매입가
+  currentPrice  Int      // 판매가
+  stock         Int?     // 재고
+  naverPrice    Int?
+  naverLink     String?
+  coupangPrice  Int?
+  coupangLink   String?
+  lastCheckedAt DateTime?
+  isManualOverride Boolean @default(false)
+}
+
+model Setting {
+  id    String @id
+  value String
+}
