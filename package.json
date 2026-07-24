@@ -16,11 +16,6 @@
     "asar": false,
     "appId": "com.search.app",
     "productName": "SEARCH",
-    "publish": {
-      "provider": "github",
-      "owner": "handaeyeon",
-      "repo": "bell"
-    },
     "win": {
       "target": "nsis",
       "executableName": "SearchSolution"
