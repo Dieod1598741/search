@@ -1,6 +1,6 @@
 {
   "name": "search",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "repository": "https://github.com/Dieod1598741/search",
   "private": true,
   "main": "main.js",
@@ -17,12 +17,6 @@
     "appId": "com.search.app",
     "productName": "SEARCH",
     "artifactName": "SEARCH_Setup.exe",
-    "publish": {
-      "provider": "github",
-      "owner": "Dieod1598741",
-      "repo": "search",
-      "releaseType": "release"
-    },
     "win": {
       "target": "nsis",
       "executableName": "SearchSolution"
