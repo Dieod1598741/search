@@ -17,6 +17,11 @@
     "appId": "com.search.app",
     "productName": "SEARCH",
     "artifactName": "SEARCH_Setup.exe",
+    "publish": {
+      "provider": "github",
+      "owner": "Dieod1598741",
+      "repo": "search"
+    },
     "win": {
       "target": "nsis",
       "executableName": "SearchSolution"
