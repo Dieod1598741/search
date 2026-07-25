@@ -40,6 +40,10 @@ export default function Home() {
   const [filterSupplier, setFilterSupplier] = useState<string>('ALL');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
 
+  // Sort states
+  type SortKey = 'name' | 'currentPrice' | 'naverPrice' | 'coupangPrice';
+  const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'asc' | 'desc' } | null>(null);
+
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
@@ -82,6 +86,38 @@ export default function Home() {
     
     return true;
   });
+
+  const sortedProducts = [...filteredProducts].sort((a, b) => {
+    if (!sortConfig) return 0;
+    
+    const aValue = a[sortConfig.key];
+    const bValue = b[sortConfig.key];
+    
+    // Handle null/undefined (push to bottom)
+    if (aValue === null || aValue === undefined) return 1;
+    if (bValue === null || bValue === undefined) return -1;
+    
+    if (aValue < bValue) {
+      return sortConfig.direction === 'asc' ? -1 : 1;
+    }
+    if (aValue > bValue) {
+      return sortConfig.direction === 'asc' ? 1 : -1;
+    }
+    return 0;
+  });
+
+  const handleSort = (key: SortKey) => {
+    let direction: 'asc' | 'desc' = 'asc';
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    }
+    setSortConfig({ key, direction });
+  };
+
+  const renderSortIndicator = (key: SortKey) => {
+    if (!sortConfig || sortConfig.key !== key) return <span style={{ color: '#cbd5e1', marginLeft: '4px', fontSize: '10px' }}>↕️</span>;
+    return sortConfig.direction === 'asc' ? <span style={{ color: '#3b82f6', marginLeft: '4px', fontSize: '12px' }}>▲</span> : <span style={{ color: '#3b82f6', marginLeft: '4px', fontSize: '12px' }}>▼</span>;
+  };
 
   useEffect(() => {
     fetchProducts();
@@ -237,7 +273,7 @@ export default function Home() {
 
   const toggleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
-      setSelectedIds(filteredProducts.map(p => p.id));
+      setSelectedIds(sortedProducts.map(p => p.id));
     } else {
       setSelectedIds([]);
     }
@@ -488,31 +524,31 @@ export default function Home() {
         <div className="table-container">
           <table>
             <thead>
-              <tr>
+              <tr style={{ backgroundColor: '#f8fafc' }}>
                 <th style={{ width: '40px', textAlign: 'center' }}>
                   <input 
                     type="checkbox" 
                     onChange={toggleSelectAll}
-                    checked={filteredProducts.length > 0 && selectedIds.length === filteredProducts.length}
+                    checked={sortedProducts.length > 0 && selectedIds.length === sortedProducts.length}
                   />
                 </th>
-                <th>상품명</th>
-                <th>현재 판매가</th>
-                <th>네이버 최저가</th>
-                <th>쿠팡 최저가</th>
+                <th onClick={() => handleSort('name')} style={{cursor: 'pointer', userSelect: 'none'}}>상품명{renderSortIndicator('name')}</th>
+                <th onClick={() => handleSort('currentPrice')} style={{cursor: 'pointer', userSelect: 'none'}}>현재 판매가{renderSortIndicator('currentPrice')}</th>
+                <th onClick={() => handleSort('naverPrice')} style={{cursor: 'pointer', userSelect: 'none'}}>네이버 최저가{renderSortIndicator('naverPrice')}</th>
+                <th onClick={() => handleSort('coupangPrice')} style={{cursor: 'pointer', userSelect: 'none'}}>쿠팡 최저가{renderSortIndicator('coupangPrice')}</th>
                 <th>상태</th>
                 <th>관리</th>
               </tr>
             </thead>
             <tbody>
-              {filteredProducts.length === 0 ? (
+              {sortedProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '2rem' }}>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>
                     {products.length === 0 ? '등록된 상품이 없습니다. 엑셀 파일을 업로드해주세요.' : '조건에 맞는 상품이 없습니다.'}
                   </td>
                 </tr>
               ) : (
-                filteredProducts.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage).map((product) => {
+                sortedProducts.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage).map((product) => {
                   const hasNaverPrice = product.naverPrice !== null && product.naverPrice !== undefined;
                   const hasCoupangPrice = product.coupangPrice !== null && product.coupangPrice !== undefined;
                   
@@ -641,7 +677,7 @@ export default function Home() {
         </div>
         
         {/* Pagination Controls */}
-        {filteredProducts.length > 0 && itemsPerPage < filteredProducts.length && (
+        {sortedProducts.length > 0 && itemsPerPage < sortedProducts.length && (
           <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '1rem', gap: '1rem', borderTop: '1px solid var(--border)' }}>
             <button 
               className="btn-secondary btn-small" 
@@ -651,12 +687,12 @@ export default function Home() {
               이전
             </button>
             <span style={{ fontSize: '0.85rem' }}>
-              {currentPage} / {Math.ceil(filteredProducts.length / itemsPerPage)} 페이지
+              {currentPage} / {Math.ceil(sortedProducts.length / itemsPerPage)} 페이지
             </span>
             <button 
               className="btn-secondary btn-small" 
-              onClick={() => setCurrentPage(p => Math.min(Math.ceil(filteredProducts.length / itemsPerPage), p + 1))}
-              disabled={currentPage === Math.ceil(filteredProducts.length / itemsPerPage)}
+              onClick={() => setCurrentPage(p => Math.min(Math.ceil(sortedProducts.length / itemsPerPage), p + 1))}
+              disabled={currentPage === Math.ceil(sortedProducts.length / itemsPerPage)}
             >
               다음
             </button>
