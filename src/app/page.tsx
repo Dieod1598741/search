@@ -115,8 +115,8 @@ export default function Home() {
   };
 
   const renderSortIndicator = (key: SortKey) => {
-    if (!sortConfig || sortConfig.key !== key) return <span style={{ color: '#cbd5e1', marginLeft: '4px', fontSize: '10px' }}>↕️</span>;
-    return sortConfig.direction === 'asc' ? <span style={{ color: '#3b82f6', marginLeft: '4px', fontSize: '12px' }}>▲</span> : <span style={{ color: '#3b82f6', marginLeft: '4px', fontSize: '12px' }}>▼</span>;
+    if (!sortConfig || sortConfig.key !== key) return <span style={{ color: 'var(--text-muted)', marginLeft: '4px', fontSize: '10px', fontWeight: 300 }}>⇅</span>;
+    return sortConfig.direction === 'asc' ? <span style={{ color: 'var(--text-color)', marginLeft: '4px', fontSize: '11px', fontWeight: 500 }}>↑</span> : <span style={{ color: 'var(--text-color)', marginLeft: '4px', fontSize: '11px', fontWeight: 500 }}>↓</span>;
   };
 
   useEffect(() => {
@@ -452,6 +452,7 @@ export default function Home() {
           <div style={{ position: 'relative' }}>
             <input 
               type="text" 
+              className="search-input"
               placeholder="약품 검색 (상품명, 바코드)" 
               value={searchKeyword}
               onChange={(e) => {
@@ -462,14 +463,17 @@ export default function Home() {
                 padding: '0.4rem 0.75rem',
                 paddingLeft: '2rem',
                 border: '1px solid var(--border)',
-                borderRadius: '6px',
-                fontSize: '0.875rem',
+                borderRadius: 'var(--radius)',
+                fontSize: '0.85rem',
                 width: '240px',
                 outline: 'none',
+                fontFamily: 'inherit',
+                backgroundColor: 'var(--bg-color)',
+                color: 'var(--text-color)'
               }}
             />
-            <span style={{ position: 'absolute', left: '0.5rem', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }}>
-              🔍
+            <span style={{ position: 'absolute', left: '0.6rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              ⌕
             </span>
           </div>
           
