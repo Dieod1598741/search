@@ -6,10 +6,21 @@ const path = require('path');
 // Packaged 환경(exe)에서는 isPackaged가 true가 됩니다.
 const dev = !app.isPackaged;
 
+const crypto = require('crypto');
+
 // Secure Environment Injection (Obfuscated)
 if (!dev) {
-  process.env.DATABASE_URL = Buffer.from('cG9zdGdyZXNxbDovL3Bvc3RncmVzLnNram9mb2x0b2t4d3d6aXVjcmhvOmdvemxkdGxmZ2VrMTJAYXdzLTEtYXAtc291dGgtMS5wb29sZXIuc3VwYWJhc2UuY29tOjY1NDMvcG9zdGdyZXM/cGdib3VuY2VyPXRydWU=', 'base64').toString('utf-8');
-  process.env.DIRECT_URL = Buffer.from('cG9zdGdyZXNxbDovL3Bvc3RncmVzLnNram9mb2x0b2t4d3d6aXVjcmhvOmdvemxkdGxmZ2VrMTJAYXdzLTEtYXAtc291dGgtMS5wb29sZXIuc3VwYWJhc2UuY29tOjU0MzIvcG9zdGdyZXM=', 'base64').toString('utf-8');
+  function __d(e, k, v) {
+    let decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(k, 'hex'), Buffer.from(v, 'hex'));
+    let decrypted = decipher.update(Buffer.from(e, 'hex'));
+    return Buffer.concat([decrypted, decipher.final()]).toString();
+  }
+  
+  const _k = '1b0391375ed75771399f093e46e672780b2e1fa6d27fea783e341aa6ebf1e905';
+  const _v = '4e94fb390f6c30069896ef5c6f6e4349';
+  
+  process.env.DATABASE_URL = __d('98b86b149172206a84d6de63dc6d143df1eb8eb9283976aca0d4a371ff70aaa1961679aa750add3949d0bca20cccb0644162bf97628acc08a7c03d977aad64398e9ae07d4c280aaabc29e8b4810931a15a5795ff569a15c79aa70c47ff21852d44ec211037b2ff4863c3a7bf7d1e1410829d8d7ba8d95db388aed675ba166243', _k, _v);
+  process.env.DIRECT_URL = __d('98b86b149172206a84d6de63dc6d143df1eb8eb9283976aca0d4a371ff70aaa1961679aa750add3949d0bca20cccb0644162bf97628acc08a7c03d977aad64398e9ae07d4c280aaabc29e8b4810931a1f0f16e16c78ad8fd86d4ac91b2fbdf9551ed75488449a373bdbc0d8ca65b170c', _k, _v);
   
   // Packaged app runs with process.cwd() as the executable folder (e.g. C:\Program Files\SEARCH)
   // We must change it to __dirname (resources/app) so Next.js can resolve node_modules
