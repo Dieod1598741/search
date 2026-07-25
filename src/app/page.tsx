@@ -38,6 +38,7 @@ export default function Home() {
   // Filter states
   const [filterStatus, setFilterStatus] = useState<'ALL' | 'ADJUST_NEEDED'>('ALL');
   const [filterSupplier, setFilterSupplier] = useState<string>('ALL');
+  const [searchKeyword, setSearchKeyword] = useState<string>('');
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -55,6 +56,14 @@ export default function Home() {
   const suppliers = Array.from(new Set(products.map(p => p.supplier).filter(Boolean))) as string[];
   
   const filteredProducts = products.filter(product => {
+    // 0. Keyword filter
+    if (searchKeyword) {
+      const keyword = searchKeyword.toLowerCase();
+      const matchesName = product.name.toLowerCase().includes(keyword);
+      const matchesBarcode = product.barcode?.toLowerCase().includes(keyword);
+      if (!matchesName && !matchesBarcode) return false;
+    }
+
     // 1. Supplier filter
     if (filterSupplier !== 'ALL' && product.supplier !== filterSupplier) return false;
     
@@ -403,7 +412,31 @@ export default function Home() {
       )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem', alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative' }}>
+            <input 
+              type="text" 
+              placeholder="약품 검색 (상품명, 바코드)" 
+              value={searchKeyword}
+              onChange={(e) => {
+                setSearchKeyword(e.target.value);
+                setCurrentPage(1);
+              }}
+              style={{
+                padding: '0.4rem 0.75rem',
+                paddingLeft: '2rem',
+                border: '1px solid var(--border)',
+                borderRadius: '6px',
+                fontSize: '0.875rem',
+                width: '240px',
+                outline: 'none',
+              }}
+            />
+            <span style={{ position: 'absolute', left: '0.5rem', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }}>
+              🔍
+            </span>
+          </div>
+          
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 500 }}>
             <input 
               type="checkbox" 
