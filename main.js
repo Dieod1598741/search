@@ -113,8 +113,13 @@ app.whenReady().then(() => {
       // 3. 브라우저 창이 내부 Next.js 서버로 접속합니다.
       mainWindow.loadURL(`http://localhost:${port}`);
       
-      // 외부 링크를 기본 시스템 브라우저(크롬, 엣지 등)로 열리도록 가로채기 (Coupang/Naver 접속 제한 우회)
+      const isInternalUrl = (url) => url.startsWith(`http://localhost:${port}`);
+
+      // 외부 링크를 기본 시스템 브라우저(크롬, 엣지 등)로 열리도록 가로채기
       mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (isInternalUrl(url)) {
+          return { action: 'allow' };
+        }
         if (url.startsWith('http://') || url.startsWith('https://')) {
           require('electron').shell.openExternal(url);
           return { action: 'deny' };
@@ -123,7 +128,7 @@ app.whenReady().then(() => {
       });
 
       mainWindow.webContents.on('will-navigate', (event, url) => {
-        if (url !== `http://localhost:${port}` && (url.startsWith('http://') || url.startsWith('https://'))) {
+        if (!isInternalUrl(url) && (url.startsWith('http://') || url.startsWith('https://'))) {
           event.preventDefault();
           require('electron').shell.openExternal(url);
         }
