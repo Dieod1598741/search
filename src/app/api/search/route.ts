@@ -7,38 +7,45 @@ import * as cheerio from 'cheerio';
 
 // 1. Direct Coupang Scraper (Using Electron Invisible Browser)
 async function scrapeCoupangDirectly(query: string, port: string): Promise<any[]> {
-  try {
-    const targetUrl = `https://www.coupang.com/np/search?q=${encodeURIComponent(query)}`;
-    const scrapeEndpoint = `http://localhost:${port}/api/internal/scrape?url=${encodeURIComponent(targetUrl)}`;
-    const res = await axios.get(scrapeEndpoint);
-    
-    if (res.data && res.data.html) {
-      const $ = cheerio.load(res.data.html);
-      const items: any[] = [];
+  const fetchPage = async (page: number) => {
+    try {
+      const targetUrl = `https://www.coupang.com/np/search?q=${encodeURIComponent(query)}&page=${page}`;
+      const scrapeEndpoint = `http://localhost:${port}/api/internal/scrape?url=${encodeURIComponent(targetUrl)}`;
+      const res = await axios.get(scrapeEndpoint);
       
-      $('li.search-product').each((i, el) => {
-        const title = $(el).find('.name').text().trim();
-        const priceStr = $(el).find('.price-value').text().trim().replace(/,/g, '');
-        let link = $(el).find('a.search-product-link').attr('href');
+      if (res.data && res.data.html) {
+        const $ = cheerio.load(res.data.html);
+        const items: any[] = [];
         
-        if (title && priceStr && !isNaN(parseInt(priceStr, 10))) {
-          if (link && !link.startsWith('http')) {
-             link = 'https://www.coupang.com' + link;
+        $('li.search-product').each((i, el) => {
+          const title = $(el).find('.name').text().trim();
+          const priceStr = $(el).find('.price-value').text().trim().replace(/,/g, '');
+          let link = $(el).find('a.search-product-link').attr('href');
+          
+          if (title && priceStr && !isNaN(parseInt(priceStr, 10))) {
+            if (link && !link.startsWith('http')) {
+               link = 'https://www.coupang.com' + link;
+            }
+            items.push({
+              title,
+              lprice: priceStr,
+              link,
+              mallName: '쿠팡'
+            });
           }
-          items.push({
-            title,
-            lprice: priceStr,
-            link,
-            mallName: '쿠팡'
-          });
-        }
-      });
-      return items;
+        });
+        return items;
+      }
+      return [];
+    } catch (e) {
+      console.error(`Coupang scrape failed for page ${page}:`, e);
+      return [];
     }
-  } catch (error) {
-    console.error('Coupang direct scrape error:', error);
-  }
-  return [];
+  };
+
+  // Scrape Page 1 and Page 2 in parallel for deeper search
+  const [page1, page2] = await Promise.all([fetchPage(1), fetchPage(2)]);
+  return [...page1, ...page2];
 }
 
 // 2. Levenshtein Distance for robust similarity
@@ -151,24 +158,34 @@ export async function POST(req: NextRequest) {
         if (fetchSuccess && naverPrice !== null && coupangPrice !== null) break; 
 
         try {
-          const [naverRes, coupangDirectItems] = await Promise.all([
+          const [naverSim, naverAsc, coupangDirectItems] = await Promise.all([
+            // Pass 1: Relevance (sim)
             axios.get('https://openapi.naver.com/v1/search/shop.json', {
-              params: {
-                query: query,
-                display: 100,
-                sort: 'sim',
-              },
-              headers: {
-                'X-Naver-Client-Id': NAVER_CLIENT_ID,
-                'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
-              }
-            }).catch(e => { console.error('Naver API failed:', e); return { data: { items: [] } }; }),
+              params: { query: query, display: 100, sort: 'sim' },
+              headers: { 'X-Naver-Client-Id': NAVER_CLIENT_ID, 'X-Naver-Client-Secret': NAVER_CLIENT_SECRET }
+            }).catch(e => { console.error('Naver API sim failed:', e); return { data: { items: [] } }; }),
+            
+            // Pass 2: Low Price (asc)
+            axios.get('https://openapi.naver.com/v1/search/shop.json', {
+              params: { query: query, display: 100, sort: 'asc' },
+              headers: { 'X-Naver-Client-Id': NAVER_CLIENT_ID, 'X-Naver-Client-Secret': NAVER_CLIENT_SECRET }
+            }).catch(e => { console.error('Naver API asc failed:', e); return { data: { items: [] } }; }),
             
             // Only try direct scraping if we are in the packaged/Electron environment with PORT set
             process.env.PORT ? scrapeCoupangDirectly(query, process.env.PORT) : Promise.resolve([])
           ]);
 
-          let combinedItems = [...(naverRes.data.items || []), ...coupangDirectItems];
+          let combinedItems = [...(naverSim.data.items || []), ...(naverAsc.data.items || []), ...coupangDirectItems];
+
+          // Deduplicate by link/productId to avoid redundant processing
+          const uniqueItemsMap = new Map();
+          for (const item of combinedItems) {
+              const uniqueKey = item.productId || item.link;
+              if (!uniqueItemsMap.has(uniqueKey)) {
+                  uniqueItemsMap.set(uniqueKey, item);
+              }
+          }
+          combinedItems = Array.from(uniqueItemsMap.values());
 
           if (combinedItems.length > 0) {
             
