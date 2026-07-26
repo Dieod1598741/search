@@ -176,21 +176,19 @@ export async function POST(req: NextRequest) {
             const originalTitle = `${product.name} ${product.spec || ''}`;
             const originalSpecs = extractSpecs(originalTitle);
             
-            // 1. Bundle keyword detection
-            const bundleRegex = /(증정|사은품|샘플|덤|박스|세트|대용량|기획|x2|x3|1\+1|2\+1)/i;
-            const naiveCountRegex = /([2-9]개|[2-9]ea)/i;
-            const isOriginalBundle = bundleRegex.test(originalTitle) || naiveCountRegex.test(originalTitle);
+            // 1. Quantity/Bundle detection
+            // We separate quantity multipliers (2개, 1+1, 세트) from promotional freebies (증정, 샘플).
+            // Promotional freebies are ALLOWED (they are just a good deal for 1 item).
+            // Quantity multipliers are BANNED if the user didn't ask for them.
+            const quantityRegex = /(x\s*([2-9]|\\d{2,})|([2-9]|\\d{2,})\\s*(개|ea|입|매|p\\b)|1\\s*\\+\\s*1|2\\s*\\+\\s*1|세트|세뜨|듀오|더블|기획(?!\\s*전))/i;
+            const isOriginalQuantity = quantityRegex.test(originalTitle);
             
-            const filterBundle = (item: any) => {
-              if (isOriginalBundle) return true; // If original is a bundle, accept everything and let spec check handle it
+            const filterQuantity = (item: any) => {
+              if (isOriginalQuantity) return true; // If original is a bundle, accept everything and let spec check handle it
               const cleanTitle = item.title.replace(/<[^>]*>?/gm, '');
               
-              // Only block explicit bundles. We let specs (like 100정 vs 10정) be handled by the conflict detector.
-              if (bundleRegex.test(cleanTitle) || naiveCountRegex.test(cleanTitle)) {
-                  // If it contains a bundle keyword, but the original spec explicitly had it, we wouldn't reach here (isOriginalBundle = true).
-                  // But wait, "증정" or "샘플" usually means it's a promotion. We might want to allow promotions if it's the exact same spec.
-                  // Let's be strict: if original is NOT a bundle, reject bundle results.
-                  return false;
+              if (quantityRegex.test(cleanTitle)) {
+                  return false; // Strictly ban multiple items if the original is just 1 item
               }
               return true;
             };
@@ -228,11 +226,7 @@ export async function POST(req: NextRequest) {
             };
 
             // Apply filters
-            let validItems = combinedItems.filter(filterRelevance).filter(filterSpecConflict);
-            const nonBundleItems = validItems.filter(filterBundle);
-            
-            // Fallback: If stripping bundles leaves nothing, use validItems (which might include promotions)
-            validItems = nonBundleItems.length > 0 ? nonBundleItems : validItems;
+            let validItems = combinedItems.filter(filterRelevance).filter(filterSpecConflict).filter(filterQuantity);
 
             if (validItems.length > 0) {
                 // Determine baseline price (to remove outliers)
