@@ -201,11 +201,13 @@ function VerifyMatchContent() {
           <a href="/" style={{ textDecoration: 'none', color: 'var(--text-muted)', fontSize: '1rem' }}>← 돌아가기</a>
           <span>⚡ 2차 검증 모드</span>
         </h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>진행률: {currentIndex + 1} / {products.length}</span>
-          <button className="btn-secondary btn-small" onClick={handlePrev} disabled={currentIndex === 0}>이전 (←)</button>
-          <button className="btn-primary btn-small" onClick={handleNext} disabled={currentIndex === products.length - 1}>건너뛰기 (→ / Space)</button>
-        </div>
+        {products.length > 1 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>진행률: {currentIndex + 1} / {products.length}</span>
+            <button className="btn-secondary btn-small" onClick={handlePrev} disabled={currentIndex === 0}>이전 (←)</button>
+            <button className="btn-primary btn-small" onClick={handleNext} disabled={currentIndex === products.length - 1}>건너뛰기 (→ / Space)</button>
+          </div>
+        )}
       </header>
 
       <div style={{ display: 'flex', gap: '1rem', flex: 1, minHeight: 0 }}>
