@@ -384,7 +384,10 @@ export default function Home() {
   return (
     <div className="container">
       <header className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 className="title">Search</h1>
+        <h1 className="title" style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+          Search
+          <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>v0.4.6</span>
+        </h1>
         <div className="upload-section" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           <button 
             className="btn-secondary" 
