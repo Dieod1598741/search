@@ -1,10 +1,47 @@
 import { NextRequest, NextResponse } from 'next/server';
 import pool from '@/lib/db';
 import axios from 'axios';
+import * as cheerio from 'cheerio';
 
 // --- Advanced Algorithm Helpers ---
 
-// 1. Levenshtein Distance for robust similarity
+// 1. Direct Coupang Scraper (Using Electron Invisible Browser)
+async function scrapeCoupangDirectly(query: string, port: string): Promise<any[]> {
+  try {
+    const targetUrl = `https://www.coupang.com/np/search?q=${encodeURIComponent(query)}`;
+    const scrapeEndpoint = `http://localhost:${port}/api/internal/scrape?url=${encodeURIComponent(targetUrl)}`;
+    const res = await axios.get(scrapeEndpoint);
+    
+    if (res.data && res.data.html) {
+      const $ = cheerio.load(res.data.html);
+      const items: any[] = [];
+      
+      $('li.search-product').each((i, el) => {
+        const title = $(el).find('.name').text().trim();
+        const priceStr = $(el).find('.price-value').text().trim().replace(/,/g, '');
+        let link = $(el).find('a.search-product-link').attr('href');
+        
+        if (title && priceStr && !isNaN(parseInt(priceStr, 10))) {
+          if (link && !link.startsWith('http')) {
+             link = 'https://www.coupang.com' + link;
+          }
+          items.push({
+            title,
+            lprice: priceStr,
+            link,
+            mallName: '쿠팡'
+          });
+        }
+      });
+      return items;
+    }
+  } catch (error) {
+    console.error('Coupang direct scrape error:', error);
+  }
+  return [];
+}
+
+// 2. Levenshtein Distance for robust similarity
 function levenshtein(a: string, b: string): number {
   const matrix = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
   for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
@@ -111,22 +148,29 @@ export async function POST(req: NextRequest) {
 
     if (NAVER_CLIENT_ID && NAVER_CLIENT_SECRET) {
       for (const query of queries) {
-        if (fetchSuccess) break; // Stop if previous stage succeeded
+        if (fetchSuccess && naverPrice !== null && coupangPrice !== null) break; 
 
         try {
-          const response = await axios.get('https://openapi.naver.com/v1/search/shop.json', {
-            params: {
-              query: query,
-              display: 100, // Maximized display to find deeply buried correct items
-              sort: 'sim',
-            },
-            headers: {
-              'X-Naver-Client-Id': NAVER_CLIENT_ID,
-              'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
-            }
-          });
+          const [naverRes, coupangDirectItems] = await Promise.all([
+            axios.get('https://openapi.naver.com/v1/search/shop.json', {
+              params: {
+                query: query,
+                display: 100,
+                sort: 'sim',
+              },
+              headers: {
+                'X-Naver-Client-Id': NAVER_CLIENT_ID,
+                'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
+              }
+            }).catch(e => { console.error('Naver API failed:', e); return { data: { items: [] } }; }),
+            
+            // Only try direct scraping if we are in the packaged/Electron environment with PORT set
+            process.env.PORT ? scrapeCoupangDirectly(query, process.env.PORT) : Promise.resolve([])
+          ]);
 
-          if (response.data.items && response.data.items.length > 0) {
+          let combinedItems = [...(naverRes.data.items || []), ...coupangDirectItems];
+
+          if (combinedItems.length > 0) {
             
             // --- Advanced Filtering Logic ---
             const originalTitle = `${product.name} ${product.spec || ''}`;
@@ -166,7 +210,7 @@ export async function POST(req: NextRequest) {
             };
 
             // Apply filters
-            let validItems = response.data.items.filter(filterRelevance).filter(filterSpecConflict);
+            let validItems = combinedItems.filter(filterRelevance).filter(filterSpecConflict);
             const nonBundleItems = validItems.filter(filterBundle);
             
             // Fallback: If stripping bundles leaves nothing, use validItems (which might include promotions)

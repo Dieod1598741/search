@@ -36,13 +36,68 @@ let mainWindow;
 
 app.whenReady().then(() => {
   nextApp.prepare().then(() => {
+    
+    // 백그라운드 크롤링용 보이지 않는 브라우저 함수
+    async function scrapeWithInvisibleBrowser(url) {
+      return new Promise((resolve, reject) => {
+        const win = new BrowserWindow({
+          show: false,
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true
+          }
+        });
+
+        const timeout = setTimeout(() => {
+          if (!win.isDestroyed()) win.destroy();
+          reject(new Error('Scraping timeout'));
+        }, 15000);
+
+        win.webContents.on('did-finish-load', async () => {
+          clearTimeout(timeout);
+          try {
+            const html = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
+            if (!win.isDestroyed()) win.destroy();
+            resolve(html);
+          } catch(e) {
+            if (!win.isDestroyed()) win.destroy();
+            reject(e);
+          }
+        });
+
+        win.webContents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        win.loadURL(url).catch(e => {
+          clearTimeout(timeout);
+          if (!win.isDestroyed()) win.destroy();
+          reject(e);
+        });
+      });
+    }
+
     // 1. 임의의 빈 포트(0)로 Next.js 서버를 내부에서 띄웁니다.
-    const server = createServer((req, res) => {
+    const server = createServer(async (req, res) => {
+      // Intercept internal scrape request
+      if (req.url && req.url.startsWith('/api/internal/scrape?url=')) {
+        const targetUrl = new URL(req.url, 'http://localhost').searchParams.get('url');
+        if (!targetUrl) {
+          res.writeHead(400);
+          return res.end('Missing url');
+        }
+        try {
+          const html = await scrapeWithInvisibleBrowser(targetUrl);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ html }));
+        } catch (e) {
+          res.writeHead(500);
+          return res.end(JSON.stringify({ error: e.message }));
+        }
+      }
       handle(req, res);
     });
     
     server.listen(0, () => {
       const port = server.address().port;
+      process.env.PORT = port; // Let Next.js API routes know the port
       console.log(`> Next.js Server Ready on http://localhost:${port}`);
       
       // 2. 서버가 뜨면 일렉트론 브라우저 창을 생성합니다.
