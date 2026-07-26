@@ -201,9 +201,10 @@ export async function POST(req: NextRequest) {
               return !hasConflictingSpec(originalSpecs, cleanTitle);
             };
 
-            // 3. Relevance & Accessory Filtering
+            // 3. Relevance & Accessory Filtering (Strict Token-Based Matching)
             const filterRelevance = (item: any) => {
               const cleanTitle = item.title.replace(/<[^>]*>?/gm, '').toLowerCase();
+              const titleNoSpace = cleanTitle.replace(/\s+/g, '');
               
               // a. Accessory Negative Keyword Check
               const accessoryRegex = /(리필|refill|케이스|case|퍼프|puff|공병|쇼핑백|뚜껑|쇼퍼백|미니어처|샘플|체험분|증정용)/i;
@@ -213,14 +214,17 @@ export async function POST(req: NextRequest) {
                   return false; // Block refill/case/samples if the original product is NOT an accessory
               }
 
-              // b. Fast Substring Match
-              const queryNoSpace = product.name.replace(/\s+/g, '').toLowerCase();
-              const titleNoSpace = cleanTitle.replace(/\s+/g, '');
-              if (titleNoSpace.includes(queryNoSpace)) return true;
+              // b. Strict Token Matching
+              // Split the original product name by spaces to extract core keywords.
+              // EVERY keyword must exist in the title (ignoring spaces in the title) to pass.
+              const tokens = product.name.split(' ').filter((t: string) => t.trim().length > 0);
+              
+              const hasAllTokens = tokens.every((token: string) => {
+                  const tokenNoSpace = token.replace(/\s+/g, '').toLowerCase();
+                  return titleNoSpace.includes(tokenNoSpace);
+              });
 
-              // c. Similarity Check (Raised threshold to 50%)
-              const similarity = calculateSimilarity(product.name, cleanTitle);
-              return similarity >= 0.5;
+              return hasAllTokens;
             };
 
             // Apply filters
