@@ -201,12 +201,26 @@ export async function POST(req: NextRequest) {
               return !hasConflictingSpec(originalSpecs, cleanTitle);
             };
 
-            // 3. Relevance Filtering
+            // 3. Relevance & Accessory Filtering
             const filterRelevance = (item: any) => {
-              const cleanTitle = item.title.replace(/<[^>]*>?/gm, '');
+              const cleanTitle = item.title.replace(/<[^>]*>?/gm, '').toLowerCase();
+              
+              // a. Accessory Negative Keyword Check
+              const accessoryRegex = /(리필|refill|케이스|case|퍼프|puff|공병|쇼핑백|뚜껑|쇼퍼백|미니어처|샘플|체험분|증정용)/i;
+              const isOriginalAccessory = accessoryRegex.test(product.name);
+              
+              if (!isOriginalAccessory && accessoryRegex.test(cleanTitle)) {
+                  return false; // Block refill/case/samples if the original product is NOT an accessory
+              }
+
+              // b. Fast Substring Match
+              const queryNoSpace = product.name.replace(/\s+/g, '').toLowerCase();
+              const titleNoSpace = cleanTitle.replace(/\s+/g, '');
+              if (titleNoSpace.includes(queryNoSpace)) return true;
+
+              // c. Similarity Check (Raised threshold to 50%)
               const similarity = calculateSimilarity(product.name, cleanTitle);
-              // Require at least 30% Levenshtein similarity to the base product name to avoid completely random products
-              return similarity >= 0.3;
+              return similarity >= 0.5;
             };
 
             // Apply filters
