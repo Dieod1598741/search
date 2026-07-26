@@ -71,32 +71,46 @@ function calculateSimilarity(query: string, title: string): number {
 }
 
 // 2. Smart Unit Extraction (Cosmetics & Medicines)
-function extractSpecs(text: string): string[] {
-  const specs: string[] = [];
+function extractSpecs(text: string): { full: string, num: number, unit: string }[] {
+  const specs = [];
   const regex = /(\d+(?:\.\d+)?)\s*(mg|ml|g|oz|정|캡슐|매|장|팩|kg|l|개|ea)(?!\w|[가-힣])/gi;
   let match;
   while ((match = regex.exec(text)) !== null) {
-    specs.push(match[0].replace(/\s+/g, '').toLowerCase());
+    specs.push({
+      full: match[0].replace(/\s+/g, '').toLowerCase(),
+      num: parseFloat(match[1]),
+      unit: match[2].toLowerCase()
+    });
   }
   return specs;
 }
 
 // 3. Conflict Detection
-function hasConflictingSpec(originalSpecs: string[], title: string): boolean {
+function hasConflictingSpec(originalSpecs: { full: string, num: number, unit: string }[], title: string): boolean {
   const titleSpecs = extractSpecs(title);
   if (originalSpecs.length === 0) return false;
   
   for (const oSpec of originalSpecs) {
-    const unitMatch = oSpec.match(/[a-z가-힣]+/i);
-    if (!unitMatch) continue;
-    const unit = unitMatch[0];
+    // Find matching unit specs in title
+    const titleSpecsWithSameUnit = titleSpecs.filter(s => s.unit === oSpec.unit);
     
-    // Check if the title has ANY spec with this unit
-    const titleSpecsWithSameUnit = titleSpecs.filter(s => s.endsWith(unit));
+    const exactMatch = titleSpecsWithSameUnit.find(s => s.full === oSpec.full);
     
     // If title has this unit, but the exact original spec is NOT present, it's conflicting!
-    if (titleSpecsWithSameUnit.length > 0 && !titleSpecsWithSameUnit.includes(oSpec)) {
-      return true;
+    if (titleSpecsWithSameUnit.length > 0 && !exactMatch) {
+      return true; // Missing the requested spec completely (e.g. want 70ml, has 30ml only)
+    }
+    
+    // If it HAS the requested spec (70ml) but ALSO has another spec (30ml)?
+    // This usually means "30ml/70ml 모음전", so the base price is for 30ml!
+    if (exactMatch && titleSpecsWithSameUnit.length > 1) {
+        const hasSmallerSpec = titleSpecsWithSameUnit.some(s => s.num < oSpec.num);
+        const isPromotion = /(증정|사은품|샘플|덤|미니어처|추가)/i.test(title);
+        
+        // If there's a smaller spec and it's NOT a promotion, block it because the base price is the smaller one.
+        if (hasSmallerSpec && !isPromotion) {
+            return true;
+        }
     }
   }
   return false;
