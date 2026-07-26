@@ -384,7 +384,7 @@ export default function Home() {
   return (
     <div className="container">
       <header className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 className="title"></h1>
+        <h1 className="title">Search</h1>
         <div className="upload-section" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           <button 
             className="btn-secondary" 
@@ -417,13 +417,22 @@ export default function Home() {
             {loading && progress ? `조회 중 (${progress.current}/${progress.total})` : '전체 가격 갱신'}
           </button>
           {selectedIds.length > 0 && (
-            <button 
-              className="btn-secondary" 
-              onClick={deleteSelected}
-              style={{ color: 'white', backgroundColor: '#e11d48', borderColor: '#e11d48' }}
-            >
-              선택 삭제 ({selectedIds.length})
-            </button>
+            <>
+              <a 
+                href={`/verify?ids=${selectedIds.join(',')}`}
+                className="btn-secondary" 
+                style={{ textDecoration: 'none', backgroundColor: '#fffbe1', borderColor: '#fef08a', color: '#a16207', fontWeight: 600 }}
+              >
+                ⚡ 2차 검증 ({selectedIds.length})
+              </a>
+              <button 
+                className="btn-secondary" 
+                onClick={deleteSelected}
+                style={{ color: 'white', backgroundColor: '#e11d48', borderColor: '#e11d48' }}
+              >
+                선택 삭제 ({selectedIds.length})
+              </button>
+            </>
           )}
         </div>
       </header>
