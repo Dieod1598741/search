@@ -223,8 +223,35 @@ function VerifyMatchContent() {
             </div>
             
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1rem', padding: '0.75rem', backgroundColor: '#fff', borderRadius: '4px', border: '1px solid var(--border)' }}>
-              <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>기준 판매가</span>
-              <span style={{ fontWeight: 600, color: 'var(--text-color)' }}>{formatPrice(currentProduct.currentPrice)}</span>
+              <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>기준 판매가 <span style={{fontSize:'0.7rem', color:'#888'}}>(클릭하여 수정)</span></span>
+              <span 
+                style={{ fontWeight: 600, color: 'var(--text-color)', cursor: 'pointer', textDecoration: 'underline' }}
+                onClick={async () => {
+                  const newPrice = prompt('새로운 기준 판매가를 입력하세요 (숫자만 입력):', currentProduct.currentPrice?.toString() || '');
+                  if (newPrice !== null) {
+                    const parsedPrice = parseInt(newPrice.replace(/[^0-9]/g, ''), 10);
+                    if (!isNaN(parsedPrice)) {
+                      try {
+                        const res = await fetch('/api/products', {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ id: currentProduct.id, currentPrice: parsedPrice })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                          setProducts(prev => prev.map(p => p.id === currentProduct.id ? { ...p, currentPrice: parsedPrice } : p));
+                        } else {
+                          alert('가격 수정에 실패했습니다.');
+                        }
+                      } catch (e) {
+                        alert('오류가 발생했습니다.');
+                      }
+                    }
+                  }
+                }}
+              >
+                {formatPrice(currentProduct.currentPrice)}
+              </span>
             </div>
           </div>
           

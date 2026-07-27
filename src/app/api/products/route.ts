@@ -14,7 +14,7 @@ export async function GET() {
 export async function PUT(req: Request) {
   try {
     const data = await req.json();
-    const { id, naverPrice, naverLink, coupangPrice, coupangLink, isManualOverride } = data;
+    const { id, naverPrice, naverLink, coupangPrice, coupangLink, isManualOverride, currentPrice } = data;
 
     if (!id) {
       return NextResponse.json({ error: 'Product ID is required' }, { status: 400 });
@@ -23,6 +23,11 @@ export async function PUT(req: Request) {
     const updates: string[] = [];
     const values: any[] = [];
     let paramIdx = 1;
+
+    if (currentPrice !== undefined) {
+      updates.push(`"currentPrice" = $${paramIdx++}`);
+      values.push(currentPrice === '' ? null : Number(currentPrice));
+    }
 
     if (naverPrice !== undefined) {
       updates.push(`"naverPrice" = $${paramIdx++}`);
