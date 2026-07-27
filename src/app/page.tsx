@@ -50,7 +50,7 @@ export default function Home() {
   
   // Edit states
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const [editForm, setEditForm] = useState({ naverPrice: '', naverLink: '', coupangPrice: '', coupangLink: '' });
+  const [editForm, setEditForm] = useState({ currentPrice: '', naverPrice: '', naverLink: '', coupangPrice: '', coupangLink: '' });
   const [savingEdit, setSavingEdit] = useState(false);
   const [copyAlertProduct, setCopyAlertProduct] = useState<{name: string, searchKeyword: string} | null>(null);
   
@@ -344,6 +344,7 @@ export default function Home() {
   const handleEditClick = (product: Product) => {
     setEditingProduct(product);
     setEditForm({
+      currentPrice: product.currentPrice ? String(product.currentPrice) : '',
       naverPrice: product.naverPrice ? String(product.naverPrice) : '',
       naverLink: product.naverLink || '',
       coupangPrice: product.coupangPrice ? String(product.coupangPrice) : '',
@@ -360,6 +361,7 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: editingProduct.id,
+          currentPrice: editForm.currentPrice,
           naverPrice: editForm.naverPrice,
           naverLink: editForm.naverLink,
           coupangPrice: editForm.coupangPrice,
@@ -730,7 +732,27 @@ export default function Home() {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 style={{ marginTop: 0, marginBottom: '20px', fontSize: '1.25rem', fontWeight: 600 }}>가격 및 링크 수기 입력</h2>
-            <div>
+            <div style={{ maxHeight: '60vh', overflowY: 'auto', paddingRight: '8px' }}>
+              <div className="form-group" style={{ marginBottom: '12px' }}>
+                <label>현재 판매가</label>
+                <div style={{ position: 'relative', marginTop: '4px' }}>
+                  <input 
+                    type="number" 
+                    value={editForm.currentPrice} 
+                    onChange={e => setEditForm({...editForm, currentPrice: e.target.value})} 
+                    placeholder="숫자만 입력"
+                    className="search-input"
+                    style={{ width: '100%', paddingRight: '28px' }}
+                  />
+                  {editForm.currentPrice && (
+                    <button 
+                      onClick={() => setEditForm({...editForm, currentPrice: ''})}
+                      style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '4px', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                      title="비우기"
+                    >✕</button>
+                  )}
+                </div>
+              </div>
               <div className="form-group" style={{ marginBottom: '12px' }}>
                 <label>네이버 최저가</label>
                 <div style={{ position: 'relative', marginTop: '4px' }}>
