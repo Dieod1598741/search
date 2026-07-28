@@ -211,7 +211,7 @@ export async function POST(req: NextRequest) {
             // We separate quantity multipliers (2개, 1+1, 세트) from promotional freebies (증정, 샘플).
             // Promotional freebies are ALLOWED (they are just a good deal for 1 item).
             // Quantity multipliers are BANNED if the user didn't ask for them.
-            const quantityRegex = /(x\s*([2-9]|\\d{2,})|([2-9]|\\d{2,})\\s*(개|ea|입|매|p\\b)|1\\s*\\+\\s*1|2\\s*\\+\\s*1|세트|세뜨|듀오|더블|기획(?!\\s*전))/i;
+            const quantityRegex = /(x\s*([2-9]|\d{2,})|([2-9]|\d{2,})\s*(개|ea|입|매|p\b|vials?|롤|박스|포|봉|팩)|1\s*\+\s*1|2\s*\+\s*1|세트|세뜨|듀오|더블|기획(?!\s*전))/i;
             const isOriginalQuantity = quantityRegex.test(originalTitle);
             
             const filterQuantity = (item: any) => {
@@ -244,20 +244,30 @@ export async function POST(req: NextRequest) {
                   return false; // Block refill/case/samples if the original product is NOT an accessory
               }
 
-              // b. Strict Token Matching
-              // Split the original product name by spaces to extract core keywords.
-              // EVERY keyword must exist in the title (ignoring special characters) to pass.
-              // Note: We completely remove terms inside parentheses like (무향) from the requirement.
-              const productNameWithoutParens = product.name.replace(/\([^)]*\)/g, '');
-              const tokens = productNameWithoutParens.split(' ').filter((t: string) => t.trim().length > 0);
+              // b. Relaxed Token Matching
+              // Remove anything inside parentheses or brackets.
+              const productNameWithoutParens = product.name.replace(/[([][^)\]]*[)\]]/g, '');
               
-              const hasAllTokens = tokens.every((token: string) => {
-                  const tokenNoSpecial = token.replace(/[^a-zA-Z0-9가-힣]/g, '').toLowerCase();
-                  if (tokenNoSpecial.length === 0) return true; // Ignore tokens that are only special chars (e.g. '-')
-                  return titleNoSpecial.includes(tokenNoSpecial);
-              });
+              // Split by whitespace, hyphen, plus, ampersand, underscore, slash
+              const rawTokens = productNameWithoutParens.split(/[\s\-/+*&_]+/).filter((t: string) => t.trim().length > 0);
+              const tokens = rawTokens.map((t: string) => t.replace(/[^a-zA-Z0-9가-힣]/g, '').toLowerCase()).filter((t: string) => t.length > 0);
+              
+              if (tokens.length === 0) return true; // Ignore if only special chars remain
 
-              return hasAllTokens;
+              let matchCount = 0;
+              for (const token of tokens) {
+                  if (titleNoSpecial.includes(token)) {
+                      matchCount++;
+                  }
+              }
+
+              // Relaxed Requirement:
+              // Short names (1-2 tokens) -> All must match
+              // Medium names (3-4 tokens) -> 1 can be missing (e.g. English acronym or trailing 'S')
+              // Long names (5+ tokens) -> 2 can be missing
+              const requiredMatches = tokens.length <= 2 ? tokens.length : tokens.length <= 4 ? tokens.length - 1 : tokens.length - 2;
+
+              return matchCount >= requiredMatches;
             };
 
             // Apply filters
