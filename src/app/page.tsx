@@ -166,6 +166,24 @@ export default function Home() {
     }
   };
 
+  const downloadDiagnostics = () => {
+    const failedItems = products.filter(p => (p.naverPrice === null || p.naverPrice === undefined) && (p.coupangPrice === null || p.coupangPrice === undefined));
+    if (failedItems.length === 0) {
+      alert("미검색 항목이 없습니다.");
+      return;
+    }
+    const textData = failedItems.map(p => `${p.name} ${p.spec || ''}`).join('\n');
+    const blob = new Blob([textData], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `failed_items_diagnostics_${new Date().getTime()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const saveSettings = async () => {
     setSavingSettings(true);
     try {
@@ -937,20 +955,30 @@ export default function Home() {
               />
             </div>
             
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2rem' }}>
               <button 
                 className="btn-secondary" 
-                onClick={() => setShowSettings(false)}
+                onClick={downloadDiagnostics}
+                style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem', backgroundColor: '#f1f5f9' }}
               >
-                취소
+                📥 미검색 항목 진단 리포트 추출
               </button>
-              <button 
-                className="btn-primary" 
-                onClick={saveSettings}
-                disabled={savingSettings}
-              >
-                {savingSettings ? '저장 중...' : '저장하기'}
-              </button>
+              
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button 
+                  className="btn-secondary" 
+                  onClick={() => setShowSettings(false)}
+                >
+                  취소
+                </button>
+                <button 
+                  className="btn-primary" 
+                  onClick={saveSettings}
+                  disabled={savingSettings}
+                >
+                  {savingSettings ? '저장 중...' : '저장'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
