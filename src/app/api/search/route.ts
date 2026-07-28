@@ -247,7 +247,9 @@ export async function POST(req: NextRequest) {
               // b. Strict Token Matching
               // Split the original product name by spaces to extract core keywords.
               // EVERY keyword must exist in the title (ignoring special characters) to pass.
-              const tokens = product.name.split(' ').filter((t: string) => t.trim().length > 0);
+              // Note: We completely remove terms inside parentheses like (무향) from the requirement.
+              const productNameWithoutParens = product.name.replace(/\([^)]*\)/g, '');
+              const tokens = productNameWithoutParens.split(' ').filter((t: string) => t.trim().length > 0);
               
               const hasAllTokens = tokens.every((token: string) => {
                   const tokenNoSpecial = token.replace(/[^a-zA-Z0-9가-힣]/g, '').toLowerCase();
