@@ -59,6 +59,12 @@ button {
   margin-bottom: 2rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background-color: var(--bg-color);
+  padding-top: 2rem;
+  margin-top: -2rem;
 }
 
 .title {
