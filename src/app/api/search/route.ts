@@ -234,6 +234,7 @@ export async function POST(req: NextRequest) {
             const filterRelevance = (item: any) => {
               const cleanTitle = item.title.replace(/<[^>]*>?/gm, '').toLowerCase();
               const titleNoSpace = cleanTitle.replace(/\s+/g, '');
+              const titleNoSpecial = cleanTitle.replace(/[^a-zA-Z0-9가-힣]/g, '');
               
               // a. Accessory Negative Keyword Check
               const accessoryRegex = /(리필|refill|케이스|case|퍼프|puff|공병|쇼핑백|뚜껑|쇼퍼백|미니어처|샘플|체험분|증정용)/i;
@@ -245,12 +246,13 @@ export async function POST(req: NextRequest) {
 
               // b. Strict Token Matching
               // Split the original product name by spaces to extract core keywords.
-              // EVERY keyword must exist in the title (ignoring spaces in the title) to pass.
+              // EVERY keyword must exist in the title (ignoring special characters) to pass.
               const tokens = product.name.split(' ').filter((t: string) => t.trim().length > 0);
               
               const hasAllTokens = tokens.every((token: string) => {
-                  const tokenNoSpace = token.replace(/\s+/g, '').toLowerCase();
-                  return titleNoSpace.includes(tokenNoSpace);
+                  const tokenNoSpecial = token.replace(/[^a-zA-Z0-9가-힣]/g, '').toLowerCase();
+                  if (tokenNoSpecial.length === 0) return true; // Ignore tokens that are only special chars (e.g. '-')
+                  return titleNoSpecial.includes(tokenNoSpecial);
               });
 
               return hasAllTokens;
