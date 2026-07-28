@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import packageJson from '../../package.json';
 import './globals.css';
 
 type Product = {
@@ -107,11 +108,15 @@ export default function Home() {
   });
 
   const handleSort = (key: SortKey) => {
-    let direction: 'asc' | 'desc' = 'asc';
-    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') {
-      direction = 'desc';
+    if (sortConfig && sortConfig.key === key) {
+      if (sortConfig.direction === 'asc') {
+        setSortConfig({ key, direction: 'desc' });
+      } else {
+        setSortConfig(null); // Reset sort
+      }
+    } else {
+      setSortConfig({ key, direction: 'asc' });
     }
-    setSortConfig({ key, direction });
   };
 
   const renderSortIndicator = (key: SortKey) => {
@@ -122,7 +127,31 @@ export default function Home() {
   useEffect(() => {
     fetchProducts();
     fetchSettings();
+    
+    const savedState = sessionStorage.getItem('searchAppState');
+    if (savedState) {
+        try {
+            const parsed = JSON.parse(savedState);
+            if (parsed.filterStatus) setFilterStatus(parsed.filterStatus);
+            if (parsed.filterSupplier) setFilterSupplier(parsed.filterSupplier);
+            if (parsed.searchKeyword !== undefined) setSearchKeyword(parsed.searchKeyword);
+            if (parsed.sortConfig !== undefined) setSortConfig(parsed.sortConfig);
+            if (parsed.currentPage) setCurrentPage(parsed.currentPage);
+            if (parsed.itemsPerPage) setItemsPerPage(parsed.itemsPerPage);
+        } catch(e) {}
+    }
   }, []);
+
+  useEffect(() => {
+      sessionStorage.setItem('searchAppState', JSON.stringify({
+          filterStatus,
+          filterSupplier,
+          searchKeyword,
+          sortConfig,
+          currentPage,
+          itemsPerPage
+      }));
+  }, [filterStatus, filterSupplier, searchKeyword, sortConfig, currentPage, itemsPerPage]);
 
   const fetchSettings = async () => {
     try {
@@ -388,7 +417,7 @@ export default function Home() {
       <header className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1 className="title" style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
           Search
-          <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>v0.4.6</span>
+          <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>v{packageJson.version}</span>
         </h1>
         <div className="upload-section" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           <button 
