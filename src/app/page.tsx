@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import packageJson from '../../package.json';
+import * as XLSX from 'xlsx';
 import './globals.css';
 
 type Product = {
@@ -37,7 +38,7 @@ export default function Home() {
   const [savingSettings, setSavingSettings] = useState(false);
   
   // Filter states
-  const [filterStatus, setFilterStatus] = useState<'ALL' | 'ADJUST_NEEDED'>('ALL');
+  const [filterStatus, setFilterStatus] = useState<'ALL' | 'ADJUST_NEEDED' | 'UNSEARCHED'>('ALL');
   const [filterSupplier, setFilterSupplier] = useState<string>('ALL');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
 
@@ -83,6 +84,10 @@ export default function Home() {
       
       const isExpensive = hasOnlinePrice && product.currentPrice > lowestOnlinePrice;
       if (!isExpensive) return false;
+    } else if (filterStatus === 'UNSEARCHED') {
+      const hasNaverPrice = product.naverPrice !== null && product.naverPrice !== undefined;
+      const hasCoupangPrice = product.coupangPrice !== null && product.coupangPrice !== undefined;
+      if (hasNaverPrice || hasCoupangPrice) return false;
     }
     
     return true;
@@ -124,6 +129,8 @@ export default function Home() {
     return sortConfig.direction === 'asc' ? <span style={{ color: 'var(--text-color)', marginLeft: '4px', fontSize: '11px', fontWeight: 500 }}>↑</span> : <span style={{ color: 'var(--text-color)', marginLeft: '4px', fontSize: '11px', fontWeight: 500 }}>↓</span>;
   };
 
+  const [isRestored, setIsRestored] = useState(false);
+
   useEffect(() => {
     fetchProducts();
     fetchSettings();
@@ -140,9 +147,11 @@ export default function Home() {
             if (parsed.itemsPerPage) setItemsPerPage(parsed.itemsPerPage);
         } catch(e) {}
     }
+    setIsRestored(true);
   }, []);
 
   useEffect(() => {
+      if (!isRestored) return;
       sessionStorage.setItem('searchAppState', JSON.stringify({
           filterStatus,
           filterSupplier,
@@ -151,7 +160,7 @@ export default function Home() {
           currentPage,
           itemsPerPage
       }));
-  }, [filterStatus, filterSupplier, searchKeyword, sortConfig, currentPage, itemsPerPage]);
+  }, [filterStatus, filterSupplier, searchKeyword, sortConfig, currentPage, itemsPerPage, isRestored]);
 
   const fetchSettings = async () => {
     try {
@@ -197,14 +206,35 @@ export default function Home() {
         alert('설정이 저장되었습니다.');
         setShowSettings(false);
       } else {
-        alert('설정 저장 실패');
+        alert('저장에 실패했습니다.');
       }
     } catch (error) {
-      console.error('Failed to save settings', error);
-      alert('설정 저장 중 오류 발생');
+      alert('오류가 발생했습니다.');
     } finally {
       setSavingSettings(false);
     }
+  };
+
+  const exportToExcel = () => {
+    const data = sortedProducts.map(p => ({
+      '상품명': p.name,
+      '규격': p.spec || '',
+      '바코드': p.barcode || '',
+      '현재 판매가': p.currentPrice,
+      '네이버 최저가': p.naverPrice ?? '-',
+      '쿠팡 최저가': p.coupangPrice ?? '-',
+      '공급사': p.supplier || ''
+    }));
+    
+    if (data.length === 0) {
+      alert("출력할 데이터가 없습니다.");
+      return;
+    }
+
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Products");
+    XLSX.writeFile(workbook, `search_export_${new Date().toISOString().slice(0,10)}.xlsx`);
   };
 
   const fetchProducts = async () => {
@@ -538,18 +568,18 @@ export default function Home() {
             </span>
           </div>
           
-          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.9rem', fontWeight: 500 }}>
-            <input 
-              type="checkbox" 
-              checked={filterStatus === 'ADJUST_NEEDED'}
-              onChange={(e) => {
-                setFilterStatus(e.target.checked ? 'ADJUST_NEEDED' : 'ALL');
-                setCurrentPage(1);
-              }}
-              style={{ width: '16px', height: '16px' }}
-            />
-            가격 조정 필요 항목만 보기
-          </label>
+          <select 
+            value={filterStatus}
+            onChange={(e) => {
+              setFilterStatus(e.target.value as any);
+              setCurrentPage(1);
+            }}
+            style={{ padding: '0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }}
+          >
+            <option value="ALL">전체 상태 보기</option>
+            <option value="ADJUST_NEEDED">가격 조정 필요 항목만 보기</option>
+            <option value="UNSEARCHED">미검색 항목 (- 표시) 보기</option>
+          </select>
           
           <select 
             value={filterSupplier}
@@ -566,8 +596,18 @@ export default function Home() {
           </select>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>페이지당 보기:</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <button 
+            className="btn-secondary"
+            onClick={exportToExcel}
+            style={{ fontSize: '0.85rem', padding: '0.3rem 0.6rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            현재 목록 엑셀 저장
+          </button>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>페이지당 보기:</span>
           <select 
             value={itemsPerPage} 
             onChange={(e) => {
@@ -582,6 +622,7 @@ export default function Home() {
             <option value={50}>50개</option>
             <option value={filteredProducts.length > 0 ? filteredProducts.length : 1000}>전체보기</option>
           </select>
+          </div>
         </div>
       </div>
 
