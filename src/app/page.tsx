@@ -243,7 +243,6 @@ export default function Home() {
       const data = await res.json();
       if (data.products) {
         setProducts(data.products);
-        setCurrentPage(1); // Reset to first page on load
       }
     } catch (error) {
       console.error('Failed to fetch products', error);
