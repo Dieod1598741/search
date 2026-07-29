@@ -303,8 +303,18 @@ export default function Home() {
       const data = await res.json();
       if (data.success && data.product) {
         setProducts(prevProducts => prevProducts.map(p => p.id === productId ? data.product : p));
+        
+        // 피드백 추가: 키워드 수정 재조회 시결과를 알려줍니다.
+        if (customKeyword) {
+          if (!data.product.naverPrice && !data.product.coupangPrice) {
+            alert('키워드를 수정하여 재조회했지만 여전히 조건에 맞는 최저가를 찾지 못했습니다.\n\n- 해당 상품이 온라인에 없거나\n- 용량/묶음 조건이 맞지 않아 걸러졌을 수 있습니다.');
+          } else {
+            alert('성공적으로 최저가를 찾아 반영했습니다!');
+          }
+        }
       } else {
         console.error('가격 조회 실패:', data.error);
+        if (customKeyword) alert('오류가 발생했습니다: ' + (data.error || '알 수 없는 오류'));
       }
     } catch (error) {
       console.error(error);
