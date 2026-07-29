@@ -128,7 +128,7 @@ function isPriceOutlier(price: number, baselinePrice: number | null): boolean {
 
 export async function POST(req: NextRequest) {
   try {
-    const { productId } = await req.json();
+    const { productId, customKeyword } = await req.json();
     
     const { rows: productRows } = await pool.query('SELECT * FROM "Product" WHERE id = $1', [productId]);
     const product = productRows[0];
@@ -146,11 +146,13 @@ export async function POST(req: NextRequest) {
     }
 
     // --- Multi-stage Fallback Search Strategy ---
-    const queries = [
+    const queries = customKeyword ? [customKeyword] : [
       product.spec ? `${product.name} ${product.spec}` : product.name,
       product.barcode ? `${product.name} ${product.barcode}` : null,
       product.name
     ].filter(Boolean) as string[];
+
+    const baseSearchName = customKeyword || product.name;
     
     const { rows: settings } = await pool.query('SELECT * FROM "Setting"');
     const config = settings.reduce((acc: Record<string, string>, curr) => {
@@ -246,7 +248,7 @@ export async function POST(req: NextRequest) {
 
               // b. Relaxed Token Matching
               // Remove anything inside parentheses or brackets.
-              const productNameWithoutParens = product.name.replace(/[([][^)\]]*[)\]]/g, '');
+              const productNameWithoutParens = baseSearchName.replace(/[([][^)\]]*[)\]]/g, '');
               
               // Split by whitespace, hyphen, plus, ampersand, underscore, slash
               const rawTokens = productNameWithoutParens.split(/[\s\-/+*&_]+/).filter((t: string) => t.trim().length > 0);

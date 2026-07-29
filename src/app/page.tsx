@@ -289,7 +289,7 @@ export default function Home() {
     }
   };
 
-  const checkPrice = async (productId: number, productName: string) => {
+  const checkPrice = async (productId: number, productName: string, customKeyword?: string) => {
     setCheckingIds(prev => new Set(prev).add(productId));
     setActiveSearches(prev => [...prev, productName]);
     try {
@@ -298,7 +298,7 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ productId }),
+        body: JSON.stringify({ productId, customKeyword }),
       });
       const data = await res.json();
       if (data.success && data.product) {
@@ -776,12 +776,28 @@ export default function Home() {
                           >
                             {checkingIds.has(product.id) ? '조회 중...' : (product.isManualOverride ? '🔒 수동 고정' : '가격 확인')}
                           </button>
+                          
+                          <button
+                            className="btn-secondary btn-small"
+                            onClick={() => {
+                              const kw = prompt('검색 키워드를 짧고 명확하게 수정하여 재조회해보세요:\n(예: 포엘리에 옴므 올인원 5In 1 퍼펙트로션 150ml (미백) -> 포엘리에 옴므 퍼펙트로션 150ml)', product.name);
+                              if (kw && kw.trim() !== '') {
+                                checkPrice(product.id, product.name, kw.trim());
+                              }
+                            }}
+                            disabled={checkingIds.has(product.id) || loading || product.isManualOverride}
+                            style={{ minWidth: '70px', padding: '4px', fontSize: '0.75rem', backgroundColor: '#f8fafc' }}
+                            title="이름이 길거나 기호가 많아 검색이 안 될 때 키워드를 수정해서 다시 검색합니다."
+                          >
+                            키워드 수정 
+                          </button>
+
                           <button 
                             className="btn-secondary btn-small"
                             onClick={() => handleEditClick(product)}
                             style={{ minWidth: '70px', padding: '4px' }}
                           >
-                            수정
+                            수기 입력
                           </button>
                         </div>
                       </td>
