@@ -55,6 +55,7 @@ export default function Home() {
   const [editForm, setEditForm] = useState({ currentPrice: '', naverPrice: '', naverLink: '', coupangPrice: '', coupangLink: '' });
   const [savingEdit, setSavingEdit] = useState(false);
   const [copyAlertProduct, setCopyAlertProduct] = useState<{name: string, searchKeyword: string} | null>(null);
+  const [tuningProduct, setTuningProduct] = useState<{ id: number, name: string, keyword: string } | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -790,10 +791,7 @@ export default function Home() {
                           <button
                             className="btn-secondary btn-small"
                             onClick={() => {
-                              const kw = prompt('검색 키워드를 짧고 명확하게 수정하여 재조회해보세요:\n(예: 포엘리에 옴므 올인원 5In 1 퍼펙트로션 150ml (미백) -> 포엘리에 옴므 퍼펙트로션 150ml)', product.name);
-                              if (kw && kw.trim() !== '') {
-                                checkPrice(product.id, product.name, kw.trim());
-                              }
+                              setTuningProduct({ id: product.id, name: product.name, keyword: product.name });
                             }}
                             disabled={checkingIds.has(product.id) || loading || product.isManualOverride}
                             style={{ minWidth: '70px', padding: '4px', fontSize: '0.75rem', backgroundColor: '#f8fafc' }}
@@ -986,6 +984,57 @@ export default function Home() {
                 disabled={savingEdit}
               >
                 {savingEdit ? '저장 중...' : '저장'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tuning Modal */}
+      {tuningProduct && (
+        <div 
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
+          }}
+          onClick={() => setTuningProduct(null)}
+        >
+          <div 
+            style={{ background: '#fff', padding: '24px', borderRadius: '8px', width: '400px', maxWidth: '90%' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: '12px', fontSize: '1.25rem', fontWeight: 600 }}>검색 키워드 튜닝</h2>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginBottom: '20px' }}>
+              이름이 길거나 기호가 많아 검색이 안 될 때 키워드를 짧고 명확하게 수정하여 재조회해보세요.<br/><br/>(예: <span style={{color: '#ea4335'}}>포엘리에 옴므 올인원 5In 1 퍼펙트로션 150ml (미백)</span><br/>👉 <span style={{color: '#16a34a', fontWeight: 'bold'}}>포엘리에 옴므 퍼펙트로션 150ml</span>)
+            </p>
+            <div className="form-group" style={{ marginBottom: '20px' }}>
+              <input 
+                type="text" 
+                value={tuningProduct.keyword} 
+                onChange={e => setTuningProduct({...tuningProduct, keyword: e.target.value})} 
+                className="search-input"
+                style={{ width: '100%', padding: '10px', fontSize: '0.95rem' }}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && tuningProduct.keyword.trim() !== '') {
+                    checkPrice(tuningProduct.id, tuningProduct.name, tuningProduct.keyword.trim());
+                    setTuningProduct(null);
+                  }
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button className="btn-secondary" onClick={() => setTuningProduct(null)}>취소</button>
+              <button 
+                className="btn-primary" 
+                onClick={() => {
+                  if (tuningProduct.keyword.trim() !== '') {
+                    checkPrice(tuningProduct.id, tuningProduct.name, tuningProduct.keyword.trim());
+                    setTuningProduct(null);
+                  }
+                }}
+              >
+                재조회
               </button>
             </div>
           </div>
