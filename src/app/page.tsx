@@ -743,7 +743,19 @@ export default function Home() {
                               <span className="badge badge-green">적정가</span>
                             )
                           ) : (
-                            <span className="badge" style={{ backgroundColor: '#f1f5f9' }}>미조회</span>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                              <span className="badge" style={{ backgroundColor: '#f1f5f9' }}>미검색</span>
+                              <a 
+                                href={`https://www.google.com/search?q=${encodeURIComponent(product.name + ' ' + (product.spec || ''))}`} 
+                                target="_blank" 
+                                className="link-icon"
+                                style={{ fontSize: '0.75rem', color: '#ea4335', display: 'flex', alignItems: 'center', gap: '2px', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'none' }}
+                                title="구글에서 상품 검색하기"
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 12a10 10 0 1 0 20 0 10 10 0 1 0-20 0"></path><path d="M12 2a10 10 0 0 1 10 10"></path><path d="M12 22a10 10 0 0 1-10-10"></path><path d="M2 12h20"></path><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                                구글 검색
+                              </a>
+                            </div>
                           )}
                           
                           {product.lastCheckedAt && !checkingIds.has(product.id) && (
