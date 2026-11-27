@@ -1,0 +1,54 @@
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    # Run daily at 00:00 UTC (09:00 KST) to prevent Supabase free-tier auto-pause
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allow manual trigger from GitHub Actions tab
+
+jobs:
+  ping-database:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pg driver
+        run: npm install --no-save pg
+
+      - name: Ping Supabase PostgreSQL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "❌ DATABASE_URL secret is not set. Please add it in Repository Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+          node -e '
+            const { Pool } = require("pg");
+            const pool = new Pool({
+              connectionString: process.env.DATABASE_URL,
+              ssl: { rejectUnauthorized: false },
+            });
+
+            (async () => {
+              try {
+                const now = new Date().toISOString();
+                await pool.query(
+                  `INSERT INTO "Setting" (id, value) VALUES ($1, $2)
+                   ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value`,
+                  ["KEEPALIVE_PING", now]
+                );
+                const { rows } = await pool.query(`SELECT COUNT(*)::int AS count FROM "Product"`);
+                console.log(`✅ Supabase keep-alive succeeded at ${now} (products: ${rows[0].count})`);
+              } catch (err) {
+                console.error("❌ Supabase keep-alive failed:", err.message);
+                process.exit(1);
+              } finally {
+                await pool.end();
+              }
+            })();
+          '
