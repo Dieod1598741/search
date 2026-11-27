@@ -186,17 +186,28 @@ export function passesQuantityFilter(
   }
 
   if (category === 'HEALTH_FOOD') {
+    // Strip inner serving-composition patterns like "2g x 50포", "500mg * 60정", "1000mg x 90캡슐"
+    // so they are NOT misclassified as outer multi-pack multipliers ("x 50").
+    const stripInnerComposition = (text: string) =>
+      text.replace(
+        /\d+(?:\.\d+)?\s*(?:mg|mcg|ug|㎍|g|ml)\s*(?:x|\*)\s*\d+\s*(?:포입|포|스틱입|스틱|정입|정|캡슐입|캡슐|구미|젤리|t|c)(?![a-zA-Z0-9가-힣])/gi,
+        ' '
+      );
+
+    const originalForBundleCheck = stripInnerComposition(originalTitle);
+    const titleForBundleCheck = stripInnerComposition(cleanTitle);
+
     // External container/pack bundles (do NOT ban inner unit counts like 50포, 60정, 90캡슐!)
     const healthBundleRegex =
       /((?:x|\*)\s*([2-9]|\d{2,})|([2-9]|\d{2,})\s*(통|박스|상자|개|ea|병|팩|세트|묶음)|1\s*\+\s*1|2\s*\+\s*1|3\s*\+\s*1|세트|세뜨|듀오|더블|트리플)/i;
 
     const hasOriginalBundle =
-      healthBundleRegex.test(originalTitle) ||
+      healthBundleRegex.test(originalForBundleCheck) ||
       originalSpecs.some((s) => s.dimension === 'health_pack' && s.normalizedValue >= 2);
 
     if (!hasOriginalBundle) {
       // Original is a single pack/box (e.g. "락토핏 골드 50포" or "비타민C 120정") -> block multi-pack listings
-      if (healthBundleRegex.test(cleanTitle)) {
+      if (healthBundleRegex.test(titleForBundleCheck)) {
         return false;
       }
       return true;
@@ -204,7 +215,7 @@ export function passesQuantityFilter(
 
     // Even if original has a pack count (e.g. "활기력 20ml 16병"), block EXTRA multipliers not in original (e.g. "16병 x 2", "1+1")
     const extraMultiplierRegex = /((?:x|\*)\s*([2-9]|\d{2,})|1\s*\+\s*1|2\s*\+\s*1|3\s*\+\s*1|듀오|더블|트리플)/i;
-    if (!extraMultiplierRegex.test(originalTitle) && extraMultiplierRegex.test(cleanTitle)) {
+    if (!extraMultiplierRegex.test(originalForBundleCheck) && extraMultiplierRegex.test(titleForBundleCheck)) {
       return false;
     }
 

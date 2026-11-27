@@ -73,7 +73,6 @@ export default function Home() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [copyAlertProduct, setCopyAlertProduct] = useState<{ name: string; searchKeyword: string } | null>(null);
   const [tuningProduct, setTuningProduct] = useState<{ id: number; name: string; keyword: string } | null>(null);
-  const [useDanawa, setUseDanawa] = useState(true);
 
   // Manual Add Modal states
   const [showAddModal, setShowAddModal] = useState(false);
@@ -210,7 +209,6 @@ export default function Home() {
         if (parsed.sortConfig !== undefined) setSortConfig(parsed.sortConfig);
         if (parsed.currentPage) setCurrentPage(parsed.currentPage);
         if (parsed.itemsPerPage) setItemsPerPage(parsed.itemsPerPage);
-        if (parsed.useDanawa !== undefined) setUseDanawa(parsed.useDanawa);
       } catch (e) {}
     }
     setIsRestored(true);
@@ -228,10 +226,9 @@ export default function Home() {
         sortConfig,
         currentPage,
         itemsPerPage,
-        useDanawa,
       })
     );
-  }, [activeCategory, filterStatus, filterSupplier, searchKeyword, sortConfig, currentPage, itemsPerPage, useDanawa, isRestored]);
+  }, [activeCategory, filterStatus, filterSupplier, searchKeyword, sortConfig, currentPage, itemsPerPage, isRestored]);
 
   const fetchSettings = async () => {
     try {
@@ -295,7 +292,7 @@ export default function Home() {
       규격: p.spec || '',
       바코드: p.barcode || '',
       '현재 판매가': p.currentPrice,
-      '네이버 최저가': p.naverPrice ?? '-',
+      '온라인 최저가': p.naverPrice ?? '-',
       '쿠팡 최저가': p.coupangPrice ?? '-',
       공급사: p.supplier || '',
     }));
@@ -493,7 +490,7 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ productId, customKeyword, useDanawa }),
+        body: JSON.stringify({ productId, customKeyword }),
       });
       const data = await res.json();
       if (data.success && data.product) {
@@ -704,17 +701,6 @@ export default function Home() {
           <label htmlFor="excel-upload" className="btn-secondary" style={{ cursor: 'pointer' }}>
             {uploading ? '업로드 중...' : `${activeMeta.shortLabel} 엑셀 업로드`}
           </label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', backgroundColor: 'var(--bg-color)', padding: '0.4rem 0.6rem', borderRadius: '4px', border: '1px solid var(--border)' }}>
-            <input
-              type="checkbox"
-              id="useDanawa"
-              checked={useDanawa}
-              onChange={(e) => setUseDanawa(e.target.checked)}
-            />
-            <label htmlFor="useDanawa" style={{ fontSize: '0.85rem', cursor: 'pointer', fontWeight: 500, color: '#e11d48' }}>
-              다나와 크롤링 우회
-            </label>
-          </div>
           <button
             className="btn-primary"
             onClick={checkAllPrices}
@@ -906,7 +892,7 @@ export default function Home() {
                   현재 판매가{renderSortIndicator('currentPrice')}
                 </th>
                 <th onClick={() => handleSort('naverPrice')} style={{ cursor: 'pointer', userSelect: 'none' }}>
-                  네이버 최저가{renderSortIndicator('naverPrice')}
+                  온라인 최저가{renderSortIndicator('naverPrice')}
                 </th>
                 <th onClick={() => handleSort('coupangPrice')} style={{ cursor: 'pointer', userSelect: 'none' }}>
                   쿠팡 최저가{renderSortIndicator('coupangPrice')}
@@ -1615,7 +1601,11 @@ export default function Home() {
             style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '8px', width: '400px', maxWidth: '90%', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 style={{ marginTop: 0, marginBottom: '1.5rem', fontSize: '1.25rem' }}>환경 설정</h2>
+            <h2 style={{ marginTop: 0, marginBottom: '1rem', fontSize: '1.25rem' }}>환경 설정</h2>
+
+            <div style={{ fontSize: '0.8rem', color: '#0f766e', backgroundColor: '#f0fdfa', border: '1px solid #ccfbf1', padding: '10px 12px', borderRadius: '4px', marginBottom: '1.25rem', lineHeight: 1.5 }}>
+              ✅ <b>에누리 · 다나와 통합 가격비교 엔진</b>이 기본 적용되어 있어, 별도의 API 키 없이도 모든 카테고리의 최저가를 조회할 수 있습니다.
+            </div>
 
             <div style={{ marginBottom: '1rem' }}>
               <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.85rem', fontWeight: 500 }}>

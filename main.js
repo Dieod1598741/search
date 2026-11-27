@@ -51,21 +51,25 @@ app.whenReady().then(() => {
         const timeout = setTimeout(() => {
           if (!win.isDestroyed()) win.destroy();
           reject(new Error('Scraping timeout'));
-        }, 15000);
+        }, 12000);
 
         win.webContents.on('did-finish-load', async () => {
-          clearTimeout(timeout);
           try {
+            // Brief wait so dynamic SPA/React product lists finish hydrating
+            await new Promise((r) => setTimeout(r, 800));
+            if (win.isDestroyed()) return;
             const html = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
+            clearTimeout(timeout);
             if (!win.isDestroyed()) win.destroy();
             resolve(html);
           } catch(e) {
+            clearTimeout(timeout);
             if (!win.isDestroyed()) win.destroy();
             reject(e);
           }
         });
 
-        win.webContents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        win.webContents.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
         win.loadURL(url).catch(e => {
           clearTimeout(timeout);
           if (!win.isDestroyed()) win.destroy();
