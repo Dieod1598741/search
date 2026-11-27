@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import pool from '@/lib/db';
+import pool, { ensureProductSchema } from '@/lib/db';
+import { normalizeCategory } from '@/lib/categories';
+import { evaluateCandidate, isPriceOutlier } from '@/lib/searchFilters';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-
-// --- Advanced Algorithm Helpers ---
 
 // 1. Direct Coupang Scraper (Using Electron Invisible Browser)
 async function scrapeCoupangDirectly(query: string, port: string): Promise<any[]> {
@@ -12,25 +12,25 @@ async function scrapeCoupangDirectly(query: string, port: string): Promise<any[]
       const targetUrl = `https://www.coupang.com/np/search?q=${encodeURIComponent(query)}&page=${page}`;
       const scrapeEndpoint = `http://localhost:${port}/api/internal/scrape?url=${encodeURIComponent(targetUrl)}`;
       const res = await axios.get(scrapeEndpoint);
-      
+
       if (res.data && res.data.html) {
         const $ = cheerio.load(res.data.html);
         const items: any[] = [];
-        
+
         $('li.search-product').each((i, el) => {
           const title = $(el).find('.name').text().trim();
           const priceStr = $(el).find('.price-value').text().trim().replace(/,/g, '');
           let link = $(el).find('a.search-product-link').attr('href');
-          
+
           if (title && priceStr && !isNaN(parseInt(priceStr, 10))) {
             if (link && !link.startsWith('http')) {
-               link = 'https://www.coupang.com' + link;
+              link = 'https://www.coupang.com' + link;
             }
             items.push({
               title,
               lprice: priceStr,
               link,
-              mallName: '쿠팡'
+              mallName: '쿠팡',
             });
           }
         });
@@ -48,88 +48,38 @@ async function scrapeCoupangDirectly(query: string, port: string): Promise<any[]
   return [...page1, ...page2];
 }
 
-// 2. Levenshtein Distance for robust similarity
-function levenshtein(a: string, b: string): number {
-  const matrix = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
-  for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
-  for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      if (a[i - 1] === b[j - 1]) matrix[i][j] = matrix[i - 1][j - 1];
-      else matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
-    }
-  }
-  return matrix[a.length][b.length];
-}
+// 1.5 Direct Danawa Scraper (Fallback for Naver API)
+async function scrapeDanawaDirectly(query: string): Promise<any[]> {
+  try {
+    const res = await axios.get(`https://search.danawa.com/dsearch.php?query=${encodeURIComponent(query)}`);
+    const $ = cheerio.load(res.data);
+    const items: any[] = [];
+    $('.product_list > li').each((i, el) => {
+      const title = $(el).find('.prod_name > a').text().trim();
+      const priceStr = $(el).find('.price_sect strong').text().replace(/,/g, '').trim();
+      const link = $(el).find('.prod_name > a').attr('href');
 
-function calculateSimilarity(query: string, title: string): number {
-  const q = query.replace(/\s+/g, '').toLowerCase();
-  const t = title.replace(/\s+/g, '').toLowerCase().replace(/<[^>]*>?/gm, '');
-  const distance = levenshtein(q, t);
-  const maxLength = Math.max(q.length, t.length);
-  return maxLength === 0 ? 1 : 1 - (distance / maxLength);
-}
-
-// 2. Smart Unit Extraction (Cosmetics & Medicines)
-function extractSpecs(text: string): { full: string, num: number, unit: string }[] {
-  const specs = [];
-  const regex = /(\d+(?:\.\d+)?)\s*(mg|ml|g|oz|정|캡슐|매|장|팩|kg|l|개|ea)(?!\w|[가-힣])/gi;
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    specs.push({
-      full: match[0].replace(/\s+/g, '').toLowerCase(),
-      num: parseFloat(match[1]),
-      unit: match[2].toLowerCase()
+      if (title && priceStr && !isNaN(parseInt(priceStr, 10))) {
+        items.push({
+          title,
+          lprice: priceStr,
+          link: link || `https://search.danawa.com/dsearch.php?query=${encodeURIComponent(query)}`,
+          mallName: '다나와',
+        });
+      }
     });
+    return items;
+  } catch (e) {
+    console.error(`Danawa scrape failed for ${query}:`, e);
+    return [];
   }
-  return specs;
-}
-
-// 3. Conflict Detection
-function hasConflictingSpec(originalSpecs: { full: string, num: number, unit: string }[], title: string): boolean {
-  const titleSpecs = extractSpecs(title);
-  if (originalSpecs.length === 0) return false;
-  
-  for (const oSpec of originalSpecs) {
-    // Find matching unit specs in title
-    const titleSpecsWithSameUnit = titleSpecs.filter(s => s.unit === oSpec.unit);
-    
-    const exactMatch = titleSpecsWithSameUnit.find(s => s.full === oSpec.full);
-    
-    // If title has this unit, but the exact original spec is NOT present, it's conflicting!
-    if (titleSpecsWithSameUnit.length > 0 && !exactMatch) {
-      return true; // Missing the requested spec completely (e.g. want 70ml, has 30ml only)
-    }
-    
-    // If it HAS the requested spec (70ml) but ALSO has another spec (30ml)?
-    // This usually means "30ml/70ml 모음전", so the base price is for 30ml!
-    if (exactMatch && titleSpecsWithSameUnit.length > 1) {
-        const hasSmallerSpec = titleSpecsWithSameUnit.some(s => s.num < oSpec.num);
-        const isPromotion = /(증정|사은품|샘플|덤|미니어처|추가)/i.test(title);
-        
-        // If there's a smaller spec and it's NOT a promotion, block it because the base price is the smaller one.
-        if (hasSmallerSpec && !isPromotion) {
-            return true;
-        }
-    }
-  }
-  return false;
-}
-
-// 4. Outlier Detection
-function isPriceOutlier(price: number, baselinePrice: number | null): boolean {
-  if (!baselinePrice || baselinePrice === 0) return false;
-  // If the found price is less than 20% or more than 300% of baseline, reject it.
-  if (price < baselinePrice * 0.2 || price > baselinePrice * 3) {
-    return true;
-  }
-  return false;
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const { productId, customKeyword } = await req.json();
-    
+    await ensureProductSchema();
+    const { productId, customKeyword, useDanawa } = await req.json();
+
     const { rows: productRows } = await pool.query('SELECT * FROM "Product" WHERE id = $1', [productId]);
     const product = productRows[0];
 
@@ -138,180 +88,151 @@ export async function POST(req: NextRequest) {
     }
 
     if (product.isManualOverride) {
-      return NextResponse.json({ 
-        success: true, 
+      return NextResponse.json({
+        success: true,
         product,
-        note: 'Skipped automated search due to manual override'
+        note: 'Skipped automated search due to manual override',
       });
     }
 
+    const category = normalizeCategory(product.category);
+
     // --- Multi-stage Fallback Search Strategy ---
-    const queries = customKeyword ? [customKeyword] : [
-      product.spec ? `${product.name} ${product.spec}` : product.name,
-      product.barcode ? `${product.name} ${product.barcode}` : null,
-      product.name
-    ].filter(Boolean) as string[];
+    const queries = customKeyword
+      ? [customKeyword]
+      : ([
+          product.spec ? `${product.name} ${product.spec}` : product.name,
+          product.barcode ? `${product.name} ${product.barcode}` : null,
+          product.name,
+        ].filter(Boolean) as string[]);
 
     const baseSearchName = customKeyword || product.name;
-    
+
     const { rows: settings } = await pool.query('SELECT * FROM "Setting"');
     const config = settings.reduce((acc: Record<string, string>, curr) => {
       acc[curr.id] = curr.value;
       return acc;
     }, {});
-    
+
     const NAVER_CLIENT_ID = config['NAVER_CLIENT_ID'] || '';
     const NAVER_CLIENT_SECRET = config['NAVER_CLIENT_SECRET'] || '';
-    
+
     let naverPrice: number | null = null;
     let naverLink: string | null = null;
     let coupangPrice: number | null = null;
     let coupangLink: string | null = null;
     let fetchSuccess = false;
 
-    if (NAVER_CLIENT_ID && NAVER_CLIENT_SECRET) {
+    if (useDanawa || (NAVER_CLIENT_ID && NAVER_CLIENT_SECRET)) {
       for (const query of queries) {
-        if (fetchSuccess && naverPrice !== null && coupangPrice !== null) break; 
+        if (fetchSuccess && naverPrice !== null && coupangPrice !== null) break;
 
         try {
-          const [naverSim, naverAsc, coupangDirectItems] = await Promise.all([
-            // Pass 1: Relevance (sim)
-            axios.get('https://openapi.naver.com/v1/search/shop.json', {
-              params: { query: query, display: 100, sort: 'sim' },
-              headers: { 'X-Naver-Client-Id': NAVER_CLIENT_ID, 'X-Naver-Client-Secret': NAVER_CLIENT_SECRET }
-            }).catch(e => { console.error('Naver API sim failed:', e); return { data: { items: [] } }; }),
-            
-            // Pass 2: Low Price (asc)
-            axios.get('https://openapi.naver.com/v1/search/shop.json', {
-              params: { query: query, display: 100, sort: 'asc' },
-              headers: { 'X-Naver-Client-Id': NAVER_CLIENT_ID, 'X-Naver-Client-Secret': NAVER_CLIENT_SECRET }
-            }).catch(e => { console.error('Naver API asc failed:', e); return { data: { items: [] } }; }),
-            
+          const [naverSim, naverAsc, coupangDirectItems, danawaItems] = await Promise.all([
+            // Pass 1: Relevance (sim) - only if not using Danawa
+            !useDanawa && NAVER_CLIENT_ID
+              ? axios
+                  .get('https://openapi.naver.com/v1/search/shop.json', {
+                    params: { query: query, display: 100, sort: 'sim' },
+                    headers: {
+                      'X-Naver-Client-Id': NAVER_CLIENT_ID,
+                      'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
+                    },
+                  })
+                  .catch((e) => {
+                    console.error('Naver API sim failed:', e);
+                    return { data: { items: [] } };
+                  })
+              : Promise.resolve({ data: { items: [] } }),
+
+            // Pass 2: Low Price (asc) - only if not using Danawa
+            !useDanawa && NAVER_CLIENT_ID
+              ? axios
+                  .get('https://openapi.naver.com/v1/search/shop.json', {
+                    params: { query: query, display: 100, sort: 'asc' },
+                    headers: {
+                      'X-Naver-Client-Id': NAVER_CLIENT_ID,
+                      'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
+                    },
+                  })
+                  .catch((e) => {
+                    console.error('Naver API asc failed:', e);
+                    return { data: { items: [] } };
+                  })
+              : Promise.resolve({ data: { items: [] } }),
+
             // Only try direct scraping if we are in the packaged/Electron environment with PORT set
-            process.env.PORT ? scrapeCoupangDirectly(query, process.env.PORT) : Promise.resolve([])
+            process.env.PORT ? scrapeCoupangDirectly(query, process.env.PORT) : Promise.resolve([]),
+
+            // Danawa Fallback
+            useDanawa ? scrapeDanawaDirectly(query) : Promise.resolve([]),
           ]);
 
-          let combinedItems = [...(naverSim.data.items || []), ...(naverAsc.data.items || []), ...coupangDirectItems];
+          let combinedItems = [
+            ...(naverSim.data.items || []),
+            ...(naverAsc.data.items || []),
+            ...coupangDirectItems,
+            ...danawaItems,
+          ];
 
           // Deduplicate by link/productId to avoid redundant processing
           const uniqueItemsMap = new Map();
           for (const item of combinedItems) {
-              const uniqueKey = item.productId || item.link;
-              if (!uniqueItemsMap.has(uniqueKey)) {
-                  uniqueItemsMap.set(uniqueKey, item);
-              }
+            const uniqueKey = item.productId || item.link;
+            if (!uniqueItemsMap.has(uniqueKey)) {
+              uniqueItemsMap.set(uniqueKey, item);
+            }
           }
           combinedItems = Array.from(uniqueItemsMap.values());
 
           if (combinedItems.length > 0) {
-            
-            // --- Advanced Filtering Logic ---
-            const originalTitle = `${product.name} ${product.spec || ''}`;
-            const originalSpecs = extractSpecs(originalTitle);
-            
-            // 1. Quantity/Bundle detection
-            // We separate quantity multipliers (2개, 1+1, 세트) from promotional freebies (증정, 샘플).
-            // Promotional freebies are ALLOWED (they are just a good deal for 1 item).
-            // Quantity multipliers are BANNED if the user didn't ask for them.
-            const quantityRegex = /(x\s*([2-9]|\d{2,})|([2-9]|\d{2,})\s*(개|ea|입|매|p\b|vials?|롤|박스|포|봉|팩)|1\s*\+\s*1|2\s*\+\s*1|세트|세뜨|듀오|더블|기획(?!\s*전))/i;
-            const isOriginalQuantity = quantityRegex.test(originalTitle);
-            
-            const filterQuantity = (item: any) => {
-              if (isOriginalQuantity) return true; // If original is a bundle, accept everything and let spec check handle it
-              const cleanTitle = item.title.replace(/<[^>]*>?/gm, '');
-              
-              if (quantityRegex.test(cleanTitle)) {
-                  return false; // Strictly ban multiple items if the original is just 1 item
-              }
-              return true;
+            // Apply category-aware filtering pipeline
+            const filterCtx = {
+              category,
+              productName: product.name,
+              productSpec: product.spec,
+              baseSearchName,
             };
 
-            // 2. Spec Conflict Filtering (The core intelligence)
-            const filterSpecConflict = (item: any) => {
-              const cleanTitle = item.title.replace(/<[^>]*>?/gm, '');
-              return !hasConflictingSpec(originalSpecs, cleanTitle);
-            };
-
-            // 3. Relevance & Accessory Filtering (Strict Token-Based Matching)
-            const filterRelevance = (item: any) => {
-              const cleanTitle = item.title.replace(/<[^>]*>?/gm, '').toLowerCase();
-              const titleNoSpace = cleanTitle.replace(/\s+/g, '');
-              const titleNoSpecial = cleanTitle.replace(/[^a-zA-Z0-9가-힣]/g, '');
-              
-              // a. Accessory Negative Keyword Check
-              const accessoryRegex = /(리필|refill|케이스|case|퍼프|puff|공병|쇼핑백|뚜껑|쇼퍼백|미니어처|샘플|체험분|증정용)/i;
-              const isOriginalAccessory = accessoryRegex.test(product.name);
-              
-              if (!isOriginalAccessory && accessoryRegex.test(cleanTitle)) {
-                  return false; // Block refill/case/samples if the original product is NOT an accessory
-              }
-
-              // b. Relaxed Token Matching
-              // Remove anything inside parentheses or brackets.
-              const productNameWithoutParens = baseSearchName.replace(/[([][^)\]]*[)\]]/g, '');
-              
-              // Split by whitespace, hyphen, plus, ampersand, underscore, slash
-              const rawTokens = productNameWithoutParens.split(/[\s\-/+*&_]+/).filter((t: string) => t.trim().length > 0);
-              const tokens = rawTokens.map((t: string) => t.replace(/[^a-zA-Z0-9가-힣]/g, '').toLowerCase()).filter((t: string) => t.length > 0);
-              
-              if (tokens.length === 0) return true; // Ignore if only special chars remain
-
-              let matchCount = 0;
-              for (const token of tokens) {
-                  if (titleNoSpecial.includes(token)) {
-                      matchCount++;
-                  }
-              }
-
-              // Relaxed Requirement:
-              // Short names (1-2 tokens) -> All must match
-              // Medium names (3-4 tokens) -> 1 can be missing (e.g. English acronym or trailing 'S')
-              // Long names (5+ tokens) -> 2 can be missing
-              const requiredMatches = tokens.length <= 2 ? tokens.length : tokens.length <= 4 ? tokens.length - 1 : tokens.length - 2;
-
-              return matchCount >= requiredMatches;
-            };
-
-            // Apply filters
-            let validItems = combinedItems.filter(filterRelevance).filter(filterSpecConflict).filter(filterQuantity);
+            const validItems = combinedItems.filter((item: any) => evaluateCandidate(filterCtx, item.title).passed);
 
             if (validItems.length > 0) {
-                // Determine baseline price (to remove outliers)
-                const baselinePrice = product.currentPrice || product.purchasePrice || null;
-                
-                const filterOutliers = (item: any) => {
-                    const price = parseInt(item.lprice, 10);
-                    return !isPriceOutlier(price, baselinePrice);
-                };
-                
-                const saneItems = validItems.filter(filterOutliers);
-                const finalItems = saneItems.length > 0 ? saneItems : validItems; // Fallback to all if baseline breaks everything
+              // Determine baseline price (to remove outliers)
+              const baselinePrice = product.currentPrice || product.purchasePrice || null;
 
-                // Bucket by mall
-                const naverCandidates = finalItems.filter((item: any) => 
-                  !item.mallName.toLowerCase().includes('쿠팡') && 
+              const saneItems = validItems.filter((item: any) => {
+                const price = parseInt(item.lprice, 10);
+                return !isPriceOutlier(price, baselinePrice);
+              });
+              const finalItems = saneItems.length > 0 ? saneItems : validItems;
+
+              // Bucket by mall
+              const naverCandidates = finalItems.filter(
+                (item: any) =>
+                  !item.mallName.toLowerCase().includes('쿠팡') &&
                   !item.mallName.toLowerCase().includes('coupang')
-                );
-                
-                const coupangCandidates = finalItems.filter((item: any) => 
-                  item.mallName.toLowerCase().includes('쿠팡') || 
+              );
+
+              const coupangCandidates = finalItems.filter(
+                (item: any) =>
+                  item.mallName.toLowerCase().includes('쿠팡') ||
                   item.mallName.toLowerCase().includes('coupang')
-                );
+              );
 
-                naverCandidates.sort((a: any, b: any) => parseInt(a.lprice, 10) - parseInt(b.lprice, 10));
-                coupangCandidates.sort((a: any, b: any) => parseInt(a.lprice, 10) - parseInt(b.lprice, 10));
+              naverCandidates.sort((a: any, b: any) => parseInt(a.lprice, 10) - parseInt(b.lprice, 10));
+              coupangCandidates.sort((a: any, b: any) => parseInt(a.lprice, 10) - parseInt(b.lprice, 10));
 
-                if (naverCandidates.length > 0) {
-                  naverPrice = parseInt(naverCandidates[0].lprice, 10);
-                  naverLink = naverCandidates[0].link;
-                  fetchSuccess = true;
-                }
-                
-                if (coupangCandidates.length > 0) {
-                  coupangPrice = parseInt(coupangCandidates[0].lprice, 10);
-                  coupangLink = coupangCandidates[0].link;
-                  fetchSuccess = true;
-                }
+              if (naverCandidates.length > 0) {
+                naverPrice = parseInt(naverCandidates[0].lprice, 10);
+                naverLink = naverCandidates[0].link;
+                fetchSuccess = true;
+              }
+
+              if (coupangCandidates.length > 0) {
+                coupangPrice = parseInt(coupangCandidates[0].lprice, 10);
+                coupangLink = coupangCandidates[0].link;
+                fetchSuccess = true;
+              }
             }
           }
         } catch (naverError) {
@@ -323,19 +244,29 @@ export async function POST(req: NextRequest) {
     const updates: string[] = ['"lastCheckedAt" = $1'];
     const values: any[] = [new Date()];
     let paramIdx = 2;
-    
-    // We update even if values are null, IF fetchSuccess was true (meaning we found something but maybe only one mall)
-    // Wait, if fetchSuccess is false, it means we found NOTHING across all queries. We just update lastCheckedAt.
+
     if (fetchSuccess) {
-      if (naverPrice !== null) { updates.push(`"naverPrice" = $${paramIdx++}`); values.push(naverPrice); }
-      if (naverLink !== null) { updates.push(`"naverLink" = $${paramIdx++}`); values.push(naverLink); }
-      if (coupangPrice !== null) { updates.push(`"coupangPrice" = $${paramIdx++}`); values.push(coupangPrice); }
-      if (coupangLink !== null) { updates.push(`"coupangLink" = $${paramIdx++}`); values.push(coupangLink); }
+      if (naverPrice !== null) {
+        updates.push(`"naverPrice" = $${paramIdx++}`);
+        values.push(naverPrice);
+      }
+      if (naverLink !== null) {
+        updates.push(`"naverLink" = $${paramIdx++}`);
+        values.push(naverLink);
+      }
+      if (coupangPrice !== null) {
+        updates.push(`"coupangPrice" = $${paramIdx++}`);
+        values.push(coupangPrice);
+      }
+      if (coupangLink !== null) {
+        updates.push(`"coupangLink" = $${paramIdx++}`);
+        values.push(coupangLink);
+      }
     }
 
     values.push(productId);
     const queryStr = `UPDATE "Product" SET ${updates.join(', ')} WHERE id = $${paramIdx} RETURNING *`;
-    
+
     const { rows: updatedRows } = await pool.query(queryStr, values);
     const updatedProduct = updatedRows[0];
 

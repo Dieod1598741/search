@@ -218,3 +218,65 @@ tr:hover {
 .search-input:focus {
   border-color: var(--primary);
 }
+
+/* Category Tabs */
+.category-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.category-tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.category-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.65rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.category-tab:hover {
+  color: var(--text-color);
+  background-color: #fafafa;
+}
+
+.category-tab.active {
+  color: var(--text-color);
+  font-weight: 600;
+  border-bottom-color: var(--primary);
+}
+
+.category-count {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.45rem;
+  background-color: #f1f5f9;
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+
+.category-tab.active .category-count {
+  background-color: var(--primary);
+  color: #ffffff;
+}
+
+.category-hint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  padding-bottom: 0.4rem;
+}

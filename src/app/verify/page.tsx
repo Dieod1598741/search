@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { CATEGORY_META, normalizeCategory, ProductCategory } from '@/lib/categories';
 import '../globals.css';
 
 type Product = {
@@ -9,6 +10,7 @@ type Product = {
   name: string;
   spec?: string;
   barcode?: string;
+  category?: ProductCategory;
   currentPrice: number;
   naverPrice?: number;
   naverLink?: string;
@@ -174,8 +176,7 @@ function VerifyMatchContent() {
   };
 
   const getUnitMultiplier = (title: string): number => {
-    // Very simple regex to find "2개", "x 3", etc. to calculate unit price
-    const match = title.match(/(?:x\s*([2-9]|\d{2,})|([2-9]|\d{2,})\s*(?:개|ea|p|입))/i);
+    const match = title.match(/(?:x\s*([2-9]|\d{2,})|([2-9]|\d{2,})\s*(?:개|ea|p|입|통|박스|상자|캔|병|봉|팩))/i);
     if (match) {
       return parseInt(match[1] || match[2], 10);
     }
@@ -214,7 +215,13 @@ function VerifyMatchContent() {
         {/* Left Panel: Target Product */}
         <div className="card" style={{ flex: '0 0 350px', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
           <div style={{ padding: '1rem', borderBottom: '1px solid var(--border)', backgroundColor: '#f8fafc' }}>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>대상 상품 정보</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>대상 상품 정보</span>
+              <span className="badge" style={{ backgroundColor: '#fff', fontSize: '0.72rem' }}>
+                {CATEGORY_META[normalizeCategory(currentProduct.category)].icon}{' '}
+                {CATEGORY_META[normalizeCategory(currentProduct.category)].label}
+              </span>
+            </div>
             <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-color)' }}>
               {currentProduct.name}
             </h2>
