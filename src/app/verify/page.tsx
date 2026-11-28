@@ -16,6 +16,9 @@ type Product = {
   naverLink?: string;
   coupangPrice?: number;
   coupangLink?: string;
+  openMarketPrice?: number;
+  openMarketLink?: string;
+  openMarketMall?: string;
   supplier?: string;
   lastCheckedAt?: string;
   isManualOverride?: boolean;
@@ -27,6 +30,8 @@ type Candidate = {
   image: string;
   lprice: string;
   mallName: string;
+  channel?: 'NAVER' | 'COUPANG' | 'OPEN_MARKET';
+  shipping?: number | null;
 };
 
 function VerifyMatchContent() {
@@ -139,27 +144,49 @@ function VerifyMatchContent() {
 
   const handleSelectCandidate = async (candidate: Candidate) => {
     if (!currentProduct) return;
-    
-    const isCoupang = candidate.mallName.toLowerCase().includes('쿠팡') || candidate.mallName.toLowerCase().includes('coupang');
-    
+
+    const lowerMall = candidate.mallName.toLowerCase();
+    const channel =
+      candidate.channel ||
+      (lowerMall.includes('쿠팡') || lowerMall.includes('coupang')
+        ? 'COUPANG'
+        : lowerMall.includes('네이버') || lowerMall.includes('naver')
+          ? 'NAVER'
+          : 'OPEN_MARKET');
+
+    const payload: Record<string, any> = {
+      id: currentProduct.id,
+      isManualOverride: true,
+      matchedTitle: candidate.title.replace(/<[^>]*>?/gm, ''),
+      matchConfidence: 'HIGH',
+      matchNote: '2차 검증 확정',
+      candidateJson: null,
+    };
+
+    if (channel === 'COUPANG') {
+      payload.coupangPrice = candidate.lprice;
+      payload.coupangLink = candidate.link;
+      payload.coupangShipping = candidate.shipping ?? null;
+    } else if (channel === 'NAVER') {
+      payload.naverPrice = candidate.lprice;
+      payload.naverLink = candidate.link;
+      payload.naverShipping = candidate.shipping ?? null;
+    } else {
+      payload.openMarketPrice = candidate.lprice;
+      payload.openMarketLink = candidate.link;
+      payload.openMarketMall = candidate.mallName;
+      payload.openMarketShipping = candidate.shipping ?? null;
+    }
+
     try {
       const res = await fetch('/api/products', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: currentProduct.id,
-          isManualOverride: true,
-          naverPrice: isCoupang ? currentProduct.naverPrice : candidate.lprice,
-          naverLink: isCoupang ? currentProduct.naverLink : candidate.link,
-          coupangPrice: isCoupang ? candidate.lprice : currentProduct.coupangPrice,
-          coupangLink: isCoupang ? candidate.link : currentProduct.coupangLink,
-        })
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (data.success) {
-        // Update local state
-        setProducts(prev => prev.map(p => p.id === currentProduct.id ? data.product : p));
-        // Auto advance
+        setProducts((prev) => prev.map((p) => (p.id === currentProduct.id ? data.product : p)));
         handleNext();
       } else {
         alert('저장에 실패했습니다.');

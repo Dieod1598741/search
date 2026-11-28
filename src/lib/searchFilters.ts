@@ -14,11 +14,88 @@ export interface FilterContext {
   baseSearchName: string;
 }
 
+export interface EvaluationResult {
+  passed: boolean;
+  reason?: string;
+  score: number;
+  confidence: 'HIGH' | 'MEDIUM';
+  note?: string;
+}
+
 /**
- * Strip HTML tags from Naver/Coupang product titles.
+ * Strip HTML tags from product titles.
  */
 export function stripHtml(text: string): string {
   return text.replace(/<[^>]*>?/gm, '');
+}
+
+/**
+ * Clean ERP-style product names (brackets, promotional tags, underscores) into human search queries.
+ */
+export function cleanProductNameForQuery(rawName: string): string {
+  return rawName
+    .replace(/\[[^\]]*\]/g, ' ') // [특가], [당일발송], [기획]
+    .replace(/\([^)]*(?:증정|기획|행사|특가|미백|주름|리뉴얼|신형|구형|정품|무료배송|택배)[^)]*\)/gi, ' ')
+    .replace(/_(대용량|단품|본품|기획|세트|신형|리뉴얼|NEW)/gi, ' ')
+    .replace(/[_/|+]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Generates up to 4 smart fallback search queries automatically so staff never need manual keyword tuning.
+ */
+export function buildSmartQueries(
+  name: string,
+  spec?: string | null,
+  barcode?: string | null,
+  customKeyword?: string | null
+): string[] {
+  if (customKeyword && customKeyword.trim()) {
+    return [customKeyword.trim()];
+  }
+
+  const queries: string[] = [];
+  const pushUnique = (q?: string | null) => {
+    const trimmed = q?.replace(/\s+/g, ' ').trim();
+    if (trimmed && trimmed.length >= 2 && !queries.includes(trimmed)) {
+      queries.push(trimmed);
+    }
+  };
+
+  const cleanedName = cleanProductNameForQuery(name);
+  const cleanSpec = spec ? spec.trim() : '';
+
+  // Step 1: Cleaned ERP name + spec
+  if (cleanSpec && !cleanedName.toLowerCase().includes(cleanSpec.toLowerCase())) {
+    pushUnique(`${cleanedName} ${cleanSpec}`);
+  } else {
+    pushUnique(cleanedName);
+  }
+
+  // Step 2: Original raw name + spec (if meaningfully different)
+  if (cleanSpec) {
+    pushUnique(`${name} ${cleanSpec}`);
+  }
+
+  // Step 3: Compact core tokens for overly long ERP names (5+ words -> first 4 meaningful tokens + spec)
+  const words = cleanedName.split(/\s+/).filter((w) => w.length >= 2);
+  if (words.length >= 5) {
+    const compact = words.slice(0, 4).join(' ');
+    pushUnique(cleanSpec ? `${compact} ${cleanSpec}` : compact);
+  }
+
+  // Step 4: Cleaned name WITHOUT spec (relies on post-search spec filter to pinpoint exact size/count)
+  if (cleanSpec) {
+    pushUnique(cleanedName);
+  }
+
+  // Step 5: Barcode fallback if available
+  if (barcode && barcode.trim().length >= 8) {
+    pushUnique(`${words.slice(0, 2).join(' ')} ${barcode.trim()}`);
+  }
+
+  return queries.slice(0, 4);
 }
 
 /**
@@ -29,7 +106,6 @@ export function extractSpecs(text: string, category: ProductCategory = 'COSMETIC
   const specs: NormalizedSpec[] = [];
   const clean = stripHtml(text);
 
-  // Order matters: longer units first so 'ml' matches before 'l', 'kg'/'mg'/'mcg' before 'g', '개입' before '개'
   const unitPattern =
     category === 'HEALTH_FOOD'
       ? 'mcg|ug|㎍|mg|kg|ml|oz|iu|억마리|억|개월분|개월|일분|일치|캡슐입|캡슐|정입|정|포입|포|스틱입|스틱|구미|젤리|상자|박스|통|병|개입|입|매|장|팩|개|ea|g|l|t|c'
@@ -45,7 +121,6 @@ export function extractSpecs(text: string, category: ProductCategory = 'COSMETIC
     const unit = match[2].toLowerCase();
     const raw = match[0].replace(/\s+/g, '').toLowerCase();
 
-    // Prevent single-letter 'l', 't', 'c' when preceded by a letter (e.g. "B12C", "SPF50L" or "21C")
     if ((unit === 'l' || unit === 't' || unit === 'c') && match.index > 0) {
       const prevChar = clean[match.index - 1];
       if (/[a-zA-Z]/.test(prevChar)) {
@@ -72,15 +147,12 @@ function mapUnitToDimension(
   unit: string,
   category: ProductCategory
 ): { dimension: string; value: number } | null {
-  // Mass (kg <-> g conversion)
   if (unit === 'kg') return { dimension: 'mass', value: Math.round(num * 1000 * 1000) / 1000 };
   if (unit === 'g') return { dimension: 'mass', value: num };
 
-  // Volume (L <-> ml conversion)
   if (unit === 'l') return { dimension: 'volume', value: Math.round(num * 1000 * 1000) / 1000 };
   if (unit === 'ml') return { dimension: 'volume', value: num };
 
-  // Active ingredient dosages (keep separate from total net weight)
   if (unit === 'mg') return { dimension: 'dosage_mg', value: num };
   if (unit === 'mcg' || unit === 'ug' || unit === '㎍') return { dimension: 'dosage_mcg', value: num };
   if (unit === 'iu') return { dimension: 'dosage_iu', value: num };
@@ -120,7 +192,6 @@ function mapUnitToDimension(
     return { dimension: `unit_${unit}`, value: num };
   }
 
-  // COSMETICS (preserve exact original behavior per unit)
   return { dimension: `unit_${unit}`, value: num };
 }
 
@@ -130,7 +201,7 @@ function valuesMatch(a: number, b: number): boolean {
 }
 
 /**
- * Detects spec conflicts & dangerous option-listing tricks (e.g. "30ml / 70ml 선택", "1통 / 3통 선택", "6캔 / 12캔 모음").
+ * Detects spec conflicts & dangerous option-listing tricks.
  */
 export function hasConflictingSpec(
   originalSpecs: NormalizedSpec[],
@@ -148,12 +219,10 @@ export function hasConflictingSpec(
 
     const exactMatch = titleSpecsSameDim.find((s) => valuesMatch(s.normalizedValue, oSpec.normalizedValue));
 
-    // Title specifies this dimension (e.g. ml or 포 or 캔), but does NOT include the requested value
     if (!exactMatch) {
       return true;
     }
 
-    // Title has BOTH the requested spec AND another value in the same dimension (e.g. "30ml / 70ml 선택" or "1통 / 3통")
     if (titleSpecsSameDim.length > 1) {
       const hasSmallerSpec = titleSpecsSameDim.some(
         (s) => !valuesMatch(s.normalizedValue, oSpec.normalizedValue) && s.normalizedValue < oSpec.normalizedValue
@@ -186,8 +255,6 @@ export function passesQuantityFilter(
   }
 
   if (category === 'HEALTH_FOOD') {
-    // Strip inner serving-composition patterns like "2g x 50포", "500mg * 60정", "1000mg x 90캡슐"
-    // so they are NOT misclassified as outer multi-pack multipliers ("x 50").
     const stripInnerComposition = (text: string) =>
       text.replace(
         /\d+(?:\.\d+)?\s*(?:mg|mcg|ug|㎍|g|ml)\s*(?:x|\*)\s*\d+\s*(?:포입|포|스틱입|스틱|정입|정|캡슐입|캡슐|구미|젤리|t|c)(?![a-zA-Z0-9가-힣])/gi,
@@ -197,7 +264,6 @@ export function passesQuantityFilter(
     const originalForBundleCheck = stripInnerComposition(originalTitle);
     const titleForBundleCheck = stripInnerComposition(cleanTitle);
 
-    // External container/pack bundles (do NOT ban inner unit counts like 50포, 60정, 90캡슐!)
     const healthBundleRegex =
       /((?:x|\*)\s*([2-9]|\d{2,})|([2-9]|\d{2,})\s*(통|박스|상자|개|ea|병|팩|세트|묶음)|1\s*\+\s*1|2\s*\+\s*1|3\s*\+\s*1|세트|세뜨|듀오|더블|트리플)/i;
 
@@ -206,14 +272,12 @@ export function passesQuantityFilter(
       originalSpecs.some((s) => s.dimension === 'health_pack' && s.normalizedValue >= 2);
 
     if (!hasOriginalBundle) {
-      // Original is a single pack/box (e.g. "락토핏 골드 50포" or "비타민C 120정") -> block multi-pack listings
       if (healthBundleRegex.test(titleForBundleCheck)) {
         return false;
       }
       return true;
     }
 
-    // Even if original has a pack count (e.g. "활기력 20ml 16병"), block EXTRA multipliers not in original (e.g. "16병 x 2", "1+1")
     const extraMultiplierRegex = /((?:x|\*)\s*([2-9]|\d{2,})|1\s*\+\s*1|2\s*\+\s*1|3\s*\+\s*1|듀오|더블|트리플)/i;
     if (!extraMultiplierRegex.test(originalForBundleCheck) && extraMultiplierRegex.test(titleForBundleCheck)) {
       return false;
@@ -230,7 +294,6 @@ export function passesQuantityFilter(
     originalSpecs.some((s) => (s.dimension === 'food_count' || s.dimension === 'pack_box') && s.normalizedValue >= 2);
 
   if (!hasOriginalCountOrBundle) {
-    // Original is a single food item (e.g. "오뚜기 토마토 케찹 500g") -> block multi-packs & boxes
     const singleItemBoxRegex = /\b1\s*(박스|상자)\b|1박스|1상자/i;
     if (foodSingleItemBundleRegex.test(cleanTitle) || singleItemBoxRegex.test(cleanTitle)) {
       return false;
@@ -238,8 +301,6 @@ export function passesQuantityFilter(
     return true;
   }
 
-  // Original already specifies an item count (e.g. "동원 참치 85g 12캔" or "신라면 5입")
-  // Block EXTRA outer multipliers that weren't in the original query (e.g. "5입 x 4", "5입 2팩", "12캔 1+1")
   const foodExtraMultiplierRegex =
     /((?:x|\*)\s*([2-9]|\d{2,})|([2-9]|\d{2,})\s*(박스|상자|세트|묶음|번들)|1\s*\+\s*1|2\s*\+\s*1|3\s*\+\s*1|듀오|더블|트리플)/i;
   if (!foodExtraMultiplierRegex.test(originalTitle) && foodExtraMultiplierRegex.test(cleanTitle)) {
@@ -258,7 +319,6 @@ export function passesAccessoryFilter(
   category: ProductCategory
 ): boolean {
   const cleanTitle = stripHtml(rawTitle).toLowerCase();
-  // Remove harmless promotional bag mentions like "쇼핑백 증정", "선물가방 포함" before checking negative keywords
   const titleWithoutGiftBag = cleanTitle.replace(
     /(쇼핑백|쇼퍼백|선물가방|기프트백|종이가방)\s*(증정|포함|제공|무료|동봉)/gi,
     ''
@@ -298,10 +358,6 @@ export function passesAccessoryFilter(
   return true;
 }
 
-/**
- * Checks whether a single token matches the title, including equivalent spec representations
- * (e.g. token "1kg" matches title containing "1000g", token "5입" matches "5봉" in FOOD).
- */
 function tokenMatchesTitle(
   token: string,
   titleNoSpecial: string,
@@ -310,7 +366,6 @@ function tokenMatchesTitle(
 ): boolean {
   if (titleNoSpecial.includes(token)) return true;
 
-  // If the token itself is a spec (e.g. "1kg", "1.5l", "60t", "5입"), check normalized spec equivalence
   const tokenSpecs = extractSpecs(token, category);
   if (tokenSpecs.length > 0 && titleSpecs.length > 0) {
     return tokenSpecs.every((ts) =>
@@ -322,9 +377,30 @@ function tokenMatchesTitle(
 }
 
 /**
- * Combined relevance, accessory, spec conflict, and quantity/bundle pipeline.
+ * Detects whether the matched candidate specifies a flavor/shade/variant that wasn't in the user's product name.
  */
-export function evaluateCandidate(ctx: FilterContext, rawTitle: string): { passed: boolean; reason?: string } {
+function detectVariantMismatchNote(originalTitle: string, candidateTitle: string, category: ProductCategory): string | undefined {
+  const origLower = originalTitle.toLowerCase();
+  const candLower = candidateTitle.toLowerCase();
+
+  const variantKeywords =
+    category === 'FOOD'
+      ? ['딸기', '바나나', '블루베리', '플레인', '멜론', '망고', '사과', '복숭아', '포도', '초코', '치즈', '매운맛', '순한맛', '오리지널', '제로', '무설탕', '디카페인', '산양']
+      : category === 'COSMETICS'
+        ? ['17호', '19호', '21호', '22호', '23호', '25호', '쿨톤', '웜톤', '매트', '글로우', '라이트', '내추럴', '베이지', '아이보리', '로지', '코랄']
+        : ['키즈', '베이비', '맘스', '시니어', '골드', '코어', '슬림', '뷰티', '키즈용', '성인용', '츄어블', '구미'];
+
+  const extraVariants = variantKeywords.filter((kw) => candLower.includes(kw) && !origLower.includes(kw));
+  if (extraVariants.length > 0) {
+    return `옵션/맛 확인 (${extraVariants.slice(0, 2).join(', ')})`;
+  }
+  return undefined;
+}
+
+/**
+ * Combined relevance, accessory, spec conflict, quantity/bundle, and confidence scoring pipeline.
+ */
+export function evaluateCandidate(ctx: FilterContext, rawTitle: string): EvaluationResult {
   const { category, productName, productSpec, baseSearchName } = ctx;
   const cleanTitle = stripHtml(rawTitle);
   const originalTitle = `${productName} ${productSpec || ''}`.trim();
@@ -332,20 +408,21 @@ export function evaluateCandidate(ctx: FilterContext, rawTitle: string): { passe
 
   // 1. Accessory / bait / clearance check
   if (!passesAccessoryFilter(productName, cleanTitle, category)) {
-    return { passed: false, reason: 'accessory_or_clearance' };
+    return { passed: false, reason: 'accessory_or_clearance', score: 0, confidence: 'MEDIUM' };
   }
 
-  // 2. Relaxed token relevance check (with unit-equivalence support)
+  // 2. Token relevance check (with ERP noise cleanup & unit-equivalence support)
   const titleNoSpecial = cleanTitle.toLowerCase().replace(/[^a-zA-Z0-9가-힣]/g, '');
   const titleSpecs = extractSpecs(cleanTitle, category);
 
-  const productNameWithoutParens = baseSearchName.replace(/[([][^)\]]*[)\]]/g, '');
-  const rawTokens = productNameWithoutParens.split(/[\s\-/+*&_]+/).filter((t) => t.trim().length > 0);
+  const cleanedForTokens = cleanProductNameForQuery(baseSearchName).replace(/[([][^)\]]*[)\]]/g, '');
+  const rawTokens = cleanedForTokens.split(/[\s\-/+*&_]+/).filter((t) => t.trim().length > 0);
   const tokens = rawTokens
     .map((t) => t.replace(/[^a-zA-Z0-9가-힣.]/g, '').toLowerCase())
     .map((t) => (/\d\.\d/.test(t) ? t : t.replace(/\./g, '')))
     .filter((t) => t.length > 0);
 
+  let tokenRatio = 1;
   if (tokens.length > 0) {
     let matchCount = 0;
     for (const token of tokens) {
@@ -358,29 +435,73 @@ export function evaluateCandidate(ctx: FilterContext, rawTitle: string): { passe
       }
     }
 
+    tokenRatio = matchCount / tokens.length;
     const requiredMatches =
       tokens.length <= 2 ? tokens.length : tokens.length <= 4 ? tokens.length - 1 : tokens.length - 2;
 
     if (matchCount < requiredMatches) {
-      return { passed: false, reason: 'low_relevance' };
+      return { passed: false, reason: 'low_relevance', score: Math.round(tokenRatio * 50), confidence: 'MEDIUM' };
     }
   }
 
   // 3. Spec conflict & option-trick check
   if (hasConflictingSpec(originalSpecs, cleanTitle, category)) {
-    return { passed: false, reason: 'spec_conflict' };
+    return { passed: false, reason: 'spec_conflict', score: Math.round(tokenRatio * 60), confidence: 'MEDIUM' };
   }
 
   // 4. Quantity / multi-pack bundle check
   if (!passesQuantityFilter(originalTitle, originalSpecs, cleanTitle, category)) {
-    return { passed: false, reason: 'quantity_bundle' };
+    return { passed: false, reason: 'quantity_bundle', score: Math.round(tokenRatio * 70), confidence: 'MEDIUM' };
   }
 
-  return { passed: true };
+  // 5. Confidence & variant check
+  const variantNote = detectVariantMismatchNote(originalTitle, cleanTitle, category);
+  const hasSpecConfirmed =
+    originalSpecs.length === 0 ||
+    originalSpecs.every((oSpec) =>
+      titleSpecs.some((ts) => ts.dimension === oSpec.dimension && valuesMatch(ts.normalizedValue, oSpec.normalizedValue))
+    );
+
+  let confidence: 'HIGH' | 'MEDIUM' = 'HIGH';
+  let note = variantNote;
+
+  if (variantNote) {
+    confidence = 'MEDIUM';
+  } else if (tokenRatio < 0.85 || !hasSpecConfirmed) {
+    confidence = 'MEDIUM';
+    note = !hasSpecConfirmed ? '규격 표기 미포함 (확인 권장)' : '유사명 매칭 (확인 권장)';
+  }
+
+  const score = Math.round(tokenRatio * 80 + (hasSpecConfirmed ? 20 : 5) - (variantNote ? 10 : 0));
+  return { passed: true, score, confidence, note };
 }
 
 /**
- * Price outlier detection (same baseline sanity check across categories).
+ * When strict filtering yields 0 exact matches, ranks top 3 nearest candidates
+ * so staff can confirm with 1 click right inside the table instead of manually searching.
+ */
+export function pickFallbackRecommendations<T extends { title: string; lprice: string; link: string; mallName: string; image?: string; shipping?: number | null }>(
+  ctx: FilterContext,
+  candidates: T[],
+  limit = 3
+): Array<T & { score: number; rejectReason?: string }> {
+  const scored: Array<T & { score: number; rejectReason?: string }> = [];
+
+  for (const cand of candidates) {
+    const ev = evaluateCandidate(ctx, cand.title);
+    if (ev.reason === 'accessory_or_clearance') continue;
+    if (ev.score >= 25) {
+      scored.push({ ...cand, score: ev.score, rejectReason: ev.reason });
+    }
+  }
+
+  return scored
+    .sort((a, b) => b.score - a.score || parseInt(a.lprice, 10) - parseInt(b.lprice, 10))
+    .slice(0, limit);
+}
+
+/**
+ * Price outlier detection.
  */
 export function isPriceOutlier(price: number, baselinePrice: number | null): boolean {
   if (!baselinePrice || baselinePrice === 0) return false;

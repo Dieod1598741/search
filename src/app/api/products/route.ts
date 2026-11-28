@@ -29,7 +29,6 @@ export async function POST(req: NextRequest) {
     await ensureProductSchema();
     const body = await req.json();
 
-    // Supports both single item payload and batch `{ category, items: [...] }` payload
     const rawItems = Array.isArray(body.items) ? body.items : [body];
     const defaultCategory = normalizeCategory(body.category);
 
@@ -89,8 +88,18 @@ export async function PUT(req: Request) {
       category,
       naverPrice,
       naverLink,
+      naverShipping,
       coupangPrice,
       coupangLink,
+      coupangShipping,
+      openMarketPrice,
+      openMarketLink,
+      openMarketMall,
+      openMarketShipping,
+      matchedTitle,
+      matchConfidence,
+      matchNote,
+      candidateJson,
       isManualOverride,
       currentPrice,
     } = data;
@@ -103,51 +112,56 @@ export async function PUT(req: Request) {
     const values: any[] = [];
     let paramIdx = 1;
 
+    const pushNum = (col: string, val: any) => {
+      if (val !== undefined) {
+        updates.push(`${col} = $${paramIdx++}`);
+        values.push(val === '' || val === null ? null : Number(val));
+      }
+    };
+    const pushStr = (col: string, val: any) => {
+      if (val !== undefined) {
+        updates.push(`${col} = $${paramIdx++}`);
+        values.push(val === '' || val === null ? null : String(val));
+      }
+    };
+
     if (name !== undefined && String(name).trim() !== '') {
       updates.push(`name = $${paramIdx++}`);
       values.push(String(name).trim());
     }
-    if (spec !== undefined) {
-      updates.push(`spec = $${paramIdx++}`);
-      values.push(spec === '' ? null : String(spec).trim());
-    }
-    if (supplier !== undefined) {
-      updates.push(`supplier = $${paramIdx++}`);
-      values.push(supplier === '' ? null : String(supplier).trim());
-    }
+    pushStr('spec', spec);
+    pushStr('supplier', supplier);
     if (category !== undefined) {
       updates.push(`category = $${paramIdx++}`);
       values.push(normalizeCategory(category));
     }
-    if (currentPrice !== undefined) {
-      updates.push(`"currentPrice" = $${paramIdx++}`);
-      values.push(currentPrice === '' ? null : Number(currentPrice));
-    }
 
-    if (naverPrice !== undefined) {
-      updates.push(`"naverPrice" = $${paramIdx++}`);
-      values.push(naverPrice === '' ? null : Number(naverPrice));
-    }
-    if (naverLink !== undefined) {
-      updates.push(`"naverLink" = $${paramIdx++}`);
-      values.push(naverLink);
-    }
-    if (coupangPrice !== undefined) {
-      updates.push(`"coupangPrice" = $${paramIdx++}`);
-      values.push(coupangPrice === '' ? null : Number(coupangPrice));
-    }
-    if (coupangLink !== undefined) {
-      updates.push(`"coupangLink" = $${paramIdx++}`);
-      values.push(coupangLink);
-    }
+    pushNum('"currentPrice"', currentPrice);
+    pushNum('"naverPrice"', naverPrice);
+    pushStr('"naverLink"', naverLink);
+    pushNum('"naverShipping"', naverShipping);
+    pushNum('"coupangPrice"', coupangPrice);
+    pushStr('"coupangLink"', coupangLink);
+    pushNum('"coupangShipping"', coupangShipping);
+    pushNum('"openMarketPrice"', openMarketPrice);
+    pushStr('"openMarketLink"', openMarketLink);
+    pushStr('"openMarketMall"', openMarketMall);
+    pushNum('"openMarketShipping"', openMarketShipping);
+    pushStr('"matchedTitle"', matchedTitle);
+    pushStr('"matchConfidence"', matchConfidence);
+    pushStr('"matchNote"', matchNote);
+    pushStr('"candidateJson"', candidateJson);
+
     if (isManualOverride !== undefined) {
       updates.push(`"isManualOverride" = $${paramIdx++}`);
-      values.push(isManualOverride);
+      values.push(Boolean(isManualOverride));
     } else if (
       naverPrice !== undefined ||
       naverLink !== undefined ||
       coupangPrice !== undefined ||
-      coupangLink !== undefined
+      coupangLink !== undefined ||
+      openMarketPrice !== undefined ||
+      openMarketLink !== undefined
     ) {
       updates.push(`"isManualOverride" = $${paramIdx++}`);
       values.push(true);

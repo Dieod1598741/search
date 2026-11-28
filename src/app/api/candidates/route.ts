@@ -10,17 +10,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 });
     }
 
-    const combinedItems = await fetchAggregatedCandidates(query, {
+    const { items, blockedChannels } = await fetchAggregatedCandidates(query, {
       port: process.env.PORT,
-      includeCoupang: Boolean(process.env.PORT),
+      includeSessionChannels: Boolean(process.env.PORT),
     });
 
-    // Sort by price ascending for fast human verification
-    const candidates = combinedItems
+    const candidates = items
       .sort((a, b) => parseInt(a.lprice, 10) - parseInt(b.lprice, 10))
       .slice(0, 30);
 
-    return NextResponse.json({ success: true, candidates });
+    return NextResponse.json({ success: true, candidates, blockedChannels });
   } catch (error) {
     console.error('Candidates API Error:', error);
     return NextResponse.json({ error: 'Failed to fetch candidates' }, { status: 500 });

@@ -11,6 +11,17 @@ import {
 } from '@/lib/categories';
 import './globals.css';
 
+type RecommendedCandidate = {
+  title: string;
+  lprice: string;
+  link: string;
+  mallName: string;
+  channel: 'NAVER' | 'COUPANG' | 'OPEN_MARKET';
+  shipping: number | null;
+  image?: string;
+  rejectReason?: string | null;
+};
+
 type Product = {
   id: number;
   name: string;
@@ -18,14 +29,109 @@ type Product = {
   barcode?: string;
   category?: ProductCategory;
   currentPrice: number;
-  naverPrice?: number;
-  naverLink?: string;
-  coupangPrice?: number;
-  coupangLink?: string;
+  naverPrice?: number | null;
+  naverLink?: string | null;
+  naverShipping?: number | null;
+  coupangPrice?: number | null;
+  coupangLink?: string | null;
+  coupangShipping?: number | null;
+  openMarketPrice?: number | null;
+  openMarketLink?: string | null;
+  openMarketMall?: string | null;
+  openMarketShipping?: number | null;
+  matchedTitle?: string | null;
+  matchConfidence?: 'HIGH' | 'MEDIUM' | null;
+  matchNote?: string | null;
+  candidateJson?: string | null;
   supplier?: string;
   lastCheckedAt?: string;
   isManualOverride?: boolean;
 };
+
+type StatusFilter = 'ALL' | 'FOUND' | 'ADJUST_NEEDED' | 'CHECK_RECOMMENDED' | 'UNSEARCHED';
+type SortKey = 'name' | 'currentPrice' | 'naverPrice' | 'coupangPrice' | 'openMarketPrice' | 'diff';
+
+function getEffectiveChannelPrice(
+  price?: number | null,
+  shipping?: number | null,
+  includeShipping = false
+): number | null {
+  if (price === null || price === undefined) return null;
+  if (includeShipping && shipping !== null && shipping !== undefined) {
+    return price + shipping;
+  }
+  return price;
+}
+
+function getBestOnlineMetrics(product: Product, includeShipping: boolean) {
+  const channels: Array<{
+    key: 'NAVER' | 'COUPANG' | 'OPEN_MARKET';
+    label: string;
+    price: number;
+    effective: number;
+    link?: string | null;
+  }> = [];
+
+  const nEff = getEffectiveChannelPrice(product.naverPrice, product.naverShipping, includeShipping);
+  if (nEff !== null && product.naverPrice != null) {
+    channels.push({ key: 'NAVER', label: '네이버', price: product.naverPrice, effective: nEff, link: product.naverLink });
+  }
+
+  const cEff = getEffectiveChannelPrice(product.coupangPrice, product.coupangShipping, includeShipping);
+  if (cEff !== null && product.coupangPrice != null) {
+    channels.push({ key: 'COUPANG', label: '쿠팡', price: product.coupangPrice, effective: cEff, link: product.coupangLink });
+  }
+
+  const oEff = getEffectiveChannelPrice(product.openMarketPrice, product.openMarketShipping, includeShipping);
+  if (oEff !== null && product.openMarketPrice != null) {
+    channels.push({
+      key: 'OPEN_MARKET',
+      label: product.openMarketMall || '오픈마켓',
+      price: product.openMarketPrice,
+      effective: oEff,
+      link: product.openMarketLink,
+    });
+  }
+
+  if (channels.length === 0) {
+    return {
+      hasOnlinePrice: false,
+      lowestPrice: null as number | null,
+      lowestLabel: null as string | null,
+      lowestLink: null as string | null,
+      diffAmount: null as number | null,
+      diffPct: null as number | null,
+      isExpensive: false,
+    };
+  }
+
+  channels.sort((a, b) => a.effective - b.effective);
+  const best = channels[0];
+  const hasCurrentPrice = product.currentPrice > 0;
+  const diffAmount = hasCurrentPrice ? best.effective - product.currentPrice : null; // negative means online is cheaper
+  const diffPct = hasCurrentPrice && diffAmount !== null ? Math.round((diffAmount / product.currentPrice) * 100) : null;
+  const isExpensive = hasCurrentPrice && product.currentPrice > best.effective;
+
+  return {
+    hasOnlinePrice: true,
+    lowestPrice: best.effective,
+    lowestLabel: best.label,
+    lowestLink: best.link || null,
+    diffAmount,
+    diffPct,
+    isExpensive,
+  };
+}
+
+function parseRecommendations(jsonStr?: string | null): RecommendedCandidate[] {
+  if (!jsonStr) return [];
+  try {
+    const parsed = JSON.parse(jsonStr);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -36,29 +142,29 @@ export default function Home() {
   // Active Category Tab
   const [activeCategory, setActiveCategory] = useState<ProductCategory>('COSMETICS');
 
-  // Progress & Loading states
+  // Progress, Parallel Batch & Session States
   const [checkingIds, setCheckingIds] = useState<Set<number>>(new Set());
-  const [activeSearches, setActiveSearches] = useState<string[]>([]);
-  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
+  const [progress, setProgress] = useState<{ current: number; total: number; label: string } | null>(null);
+  const [blockedChannels, setBlockedChannels] = useState<Array<'naver' | 'coupang'>>([]);
+  const [includeShipping, setIncludeShipping] = useState(false);
+  const [expandedRecIds, setExpandedRecIds] = useState<Set<number>>(new Set());
+  const [batchSummary, setBatchSummary] = useState<string | null>(null);
+  const stopRequestedRef = useRef(false);
 
-  // Settings states
+  // Settings Modal
   const [showSettings, setShowSettings] = useState(false);
-  const [naverClientId, setNaverClientId] = useState('');
-  const [naverClientSecret, setNaverClientSecret] = useState('');
-  const [savingSettings, setSavingSettings] = useState(false);
 
   // Filter states
-  const [filterStatus, setFilterStatus] = useState<'ALL' | 'ADJUST_NEEDED' | 'UNSEARCHED'>('ALL');
+  const [filterStatus, setFilterStatus] = useState<StatusFilter>('ALL');
   const [filterSupplier, setFilterSupplier] = useState<string>('ALL');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
 
   // Sort states
-  type SortKey = 'name' | 'currentPrice' | 'naverPrice' | 'coupangPrice';
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'asc' | 'desc' } | null>(null);
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [itemsPerPage, setItemsPerPage] = useState(20);
 
   // Edit states
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -69,9 +175,11 @@ export default function Home() {
     naverLink: '',
     coupangPrice: '',
     coupangLink: '',
+    openMarketPrice: '',
+    openMarketLink: '',
+    openMarketMall: '',
   });
   const [savingEdit, setSavingEdit] = useState(false);
-  const [copyAlertProduct, setCopyAlertProduct] = useState<{ name: string; searchKeyword: string } | null>(null);
   const [tuningProduct, setTuningProduct] = useState<{ id: number; name: string; keyword: string } | null>(null);
 
   // Manual Add Modal states
@@ -88,11 +196,10 @@ export default function Home() {
   const [bulkText, setBulkText] = useState('');
   const [savingAdd, setSavingAdd] = useState(false);
 
-  // Pending Excel Upload Modal (when current category already has items)
+  // Pending Excel Upload Modal
   const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-
   const activeMeta = CATEGORY_META[activeCategory];
 
   // Category counts & products in current category
@@ -108,38 +215,42 @@ export default function Home() {
 
   const categoryProducts = products.filter((p) => normalizeCategory(p.category) === activeCategory);
 
-  // Derived states (scoped to current category)
+  // Summary counters for current category
+  let foundCount = 0;
+  let adjustNeededCount = 0;
+  let checkRecommendedCount = 0;
+  let unsearchedCount = 0;
+
+  for (const p of categoryProducts) {
+    const m = getBestOnlineMetrics(p, includeShipping);
+    if (m.hasOnlinePrice) {
+      foundCount++;
+      if (m.isExpensive) adjustNeededCount++;
+      if (p.matchConfidence === 'MEDIUM') checkRecommendedCount++;
+    } else {
+      unsearchedCount++;
+    }
+  }
+
   const suppliers = Array.from(new Set(categoryProducts.map((p) => p.supplier).filter(Boolean))) as string[];
 
   const filteredProducts = categoryProducts.filter((product) => {
-    // 0. Keyword filter
     if (searchKeyword) {
       const keyword = searchKeyword.toLowerCase();
       const matchesName = product.name.toLowerCase().includes(keyword);
       const matchesSpec = product.spec?.toLowerCase().includes(keyword);
       const matchesBarcode = product.barcode?.toLowerCase().includes(keyword);
-      if (!matchesName && !matchesSpec && !matchesBarcode) return false;
+      const matchesMatched = product.matchedTitle?.toLowerCase().includes(keyword);
+      if (!matchesName && !matchesSpec && !matchesBarcode && !matchesMatched) return false;
     }
 
-    // 1. Supplier filter
     if (filterSupplier !== 'ALL' && product.supplier !== filterSupplier) return false;
 
-    // 2. Status filter
-    if (filterStatus === 'ADJUST_NEEDED') {
-      const hasNaverPrice = product.naverPrice !== null && product.naverPrice !== undefined;
-      const hasCoupangPrice = product.coupangPrice !== null && product.coupangPrice !== undefined;
-      let lowestOnlinePrice = Infinity;
-      if (hasNaverPrice) lowestOnlinePrice = Math.min(lowestOnlinePrice, product.naverPrice!);
-      if (hasCoupangPrice) lowestOnlinePrice = Math.min(lowestOnlinePrice, product.coupangPrice!);
-      const hasOnlinePrice = hasNaverPrice || hasCoupangPrice;
-
-      const isExpensive = hasOnlinePrice && product.currentPrice > lowestOnlinePrice;
-      if (!isExpensive) return false;
-    } else if (filterStatus === 'UNSEARCHED') {
-      const hasNaverPrice = product.naverPrice !== null && product.naverPrice !== undefined;
-      const hasCoupangPrice = product.coupangPrice !== null && product.coupangPrice !== undefined;
-      if (hasNaverPrice || hasCoupangPrice) return false;
-    }
+    const m = getBestOnlineMetrics(product, includeShipping);
+    if (filterStatus === 'FOUND' && !m.hasOnlinePrice) return false;
+    if (filterStatus === 'ADJUST_NEEDED' && !m.isExpensive) return false;
+    if (filterStatus === 'CHECK_RECOMMENDED' && !(m.hasOnlinePrice && product.matchConfidence === 'MEDIUM')) return false;
+    if (filterStatus === 'UNSEARCHED' && m.hasOnlinePrice) return false;
 
     return true;
   });
@@ -147,18 +258,22 @@ export default function Home() {
   const sortedProducts = [...filteredProducts].sort((a, b) => {
     if (!sortConfig) return 0;
 
-    const aValue = a[sortConfig.key];
-    const bValue = b[sortConfig.key];
+    let aValue: any;
+    let bValue: any;
+
+    if (sortConfig.key === 'diff') {
+      aValue = getBestOnlineMetrics(a, includeShipping).diffAmount;
+      bValue = getBestOnlineMetrics(b, includeShipping).diffAmount;
+    } else {
+      aValue = a[sortConfig.key];
+      bValue = b[sortConfig.key];
+    }
 
     if (aValue === null || aValue === undefined) return 1;
     if (bValue === null || bValue === undefined) return -1;
 
-    if (aValue < bValue) {
-      return sortConfig.direction === 'asc' ? -1 : 1;
-    }
-    if (aValue > bValue) {
-      return sortConfig.direction === 'asc' ? 1 : -1;
-    }
+    if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
+    if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
     return 0;
   });
 
@@ -167,7 +282,9 @@ export default function Home() {
     setActiveCategory(nextCategory);
     setSelectedIds([]);
     setFilterSupplier('ALL');
+    setFilterStatus('ALL');
     setCurrentPage(1);
+    setBatchSummary(null);
   };
 
   const handleSort = (key: SortKey) => {
@@ -196,7 +313,6 @@ export default function Home() {
 
   useEffect(() => {
     fetchProducts();
-    fetchSettings();
 
     const savedState = sessionStorage.getItem('searchAppState');
     if (savedState) {
@@ -209,7 +325,8 @@ export default function Home() {
         if (parsed.sortConfig !== undefined) setSortConfig(parsed.sortConfig);
         if (parsed.currentPage) setCurrentPage(parsed.currentPage);
         if (parsed.itemsPerPage) setItemsPerPage(parsed.itemsPerPage);
-      } catch (e) {}
+        if (parsed.includeShipping !== undefined) setIncludeShipping(parsed.includeShipping);
+      } catch {}
     }
     setIsRestored(true);
   }, []);
@@ -226,27 +343,43 @@ export default function Home() {
         sortConfig,
         currentPage,
         itemsPerPage,
+        includeShipping,
       })
     );
-  }, [activeCategory, filterStatus, filterSupplier, searchKeyword, sortConfig, currentPage, itemsPerPage, isRestored]);
+  }, [activeCategory, filterStatus, filterSupplier, searchKeyword, sortConfig, currentPage, itemsPerPage, includeShipping, isRestored]);
 
-  const fetchSettings = async () => {
+  const fetchProducts = async () => {
     try {
-      const res = await fetch('/api/settings');
+      const res = await fetch('/api/products');
       const data = await res.json();
-      if (data.success && data.config) {
-        setNaverClientId(data.config['NAVER_CLIENT_ID'] || '');
-        setNaverClientSecret(data.config['NAVER_CLIENT_SECRET'] || '');
+      if (data.products) {
+        setProducts(data.products);
       }
     } catch (error) {
-      console.error('Failed to fetch settings', error);
+      console.error('Failed to fetch products', error);
+    }
+  };
+
+  const openSessionWindow = async (channel: 'naver' | 'coupang') => {
+    try {
+      const res = await fetch('/api/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setBlockedChannels((prev) => prev.filter((c) => c !== channel));
+      } else {
+        alert(data.error || '세션 창을 열 수 없습니다.');
+      }
+    } catch {
+      alert('세션 창 호출 중 오류가 발생했습니다.');
     }
   };
 
   const downloadDiagnostics = () => {
-    const failedItems = categoryProducts.filter(
-      (p) => (p.naverPrice === null || p.naverPrice === undefined) && (p.coupangPrice === null || p.coupangPrice === undefined)
-    );
+    const failedItems = categoryProducts.filter((p) => !getBestOnlineMetrics(p, includeShipping).hasOnlinePrice);
     if (failedItems.length === 0) {
       alert(`[${activeMeta.label}] 미검색 항목이 없습니다.`);
       return;
@@ -263,61 +396,50 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
-  const saveSettings = async () => {
-    setSavingSettings(true);
-    try {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ naverClientId, naverClientSecret }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        alert('설정이 저장되었습니다.');
-        setShowSettings(false);
-      } else {
-        alert('저장에 실패했습니다.');
-      }
-    } catch (error) {
-      alert('오류가 발생했습니다.');
-    } finally {
-      setSavingSettings(false);
+  const exportToExcel = (onlyAdjustNeeded = false) => {
+    let targetList = sortedProducts;
+    if (onlyAdjustNeeded) {
+      targetList = categoryProducts
+        .filter((p) => getBestOnlineMetrics(p, includeShipping).isExpensive)
+        .sort((a, b) => {
+          const da = getBestOnlineMetrics(a, includeShipping).diffAmount ?? 0;
+          const db = getBestOnlineMetrics(b, includeShipping).diffAmount ?? 0;
+          return da - db; // Most overpriced first
+        });
     }
-  };
 
-  const exportToExcel = () => {
-    const data = sortedProducts.map((p) => ({
-      카테고리: CATEGORY_META[normalizeCategory(p.category)].label,
-      상품명: p.name,
-      규격: p.spec || '',
-      바코드: p.barcode || '',
-      '현재 판매가': p.currentPrice,
-      '온라인 최저가': p.naverPrice ?? '-',
-      '쿠팡 최저가': p.coupangPrice ?? '-',
-      공급사: p.supplier || '',
-    }));
+    const data = targetList.map((p) => {
+      const m = getBestOnlineMetrics(p, includeShipping);
+      return {
+        카테고리: CATEGORY_META[normalizeCategory(p.category)].label,
+        상품명: p.name,
+        규격: p.spec || '',
+        공급사: p.supplier || '',
+        '우리 판매가': p.currentPrice,
+        '네이버 최저가': p.naverPrice ?? '-',
+        '쿠팡 최저가': p.coupangPrice ?? '-',
+        '오픈마켓 최저가': p.openMarketPrice ?? '-',
+        '오픈마켓 판매처': p.openMarketMall || '',
+        '최종 최저가': m.lowestPrice ?? '-',
+        '최저가 채널': m.lowestLabel || '',
+        '판매가 차액': m.diffAmount ?? '-',
+        '차액(%)': m.diffPct !== null ? `${m.diffPct}%` : '-',
+        '매칭 상품명': p.matchedTitle || '',
+        신뢰도: p.matchConfidence === 'HIGH' ? '정확 일치' : p.matchConfidence === 'MEDIUM' ? p.matchNote || '확인 권장' : '-',
+        '최저가 링크': m.lowestLink || '',
+      };
+    });
 
     if (data.length === 0) {
-      alert('출력할 데이터가 없습니다.');
+      alert(onlyAdjustNeeded ? '가격 조정이 필요한 항목이 없습니다.' : '출력할 데이터가 없습니다.');
       return;
     }
 
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, activeMeta.excelSheetName);
-    XLSX.writeFile(workbook, `${activeMeta.exportPrefix}_${new Date().toISOString().slice(0, 10)}.xlsx`);
-  };
-
-  const fetchProducts = async () => {
-    try {
-      const res = await fetch('/api/products');
-      const data = await res.json();
-      if (data.products) {
-        setProducts(data.products);
-      }
-    } catch (error) {
-      console.error('Failed to fetch products', error);
-    }
+    XLSX.utils.book_append_sheet(workbook, worksheet, onlyAdjustNeeded ? '가격조정리포트' : activeMeta.excelSheetName);
+    const prefix = onlyAdjustNeeded ? `${activeMeta.exportPrefix}_adjust_report` : activeMeta.exportPrefix;
+    XLSX.writeFile(workbook, `${prefix}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   const executeFileUpload = async (file: File, mode: 'replace' | 'append') => {
@@ -347,31 +469,24 @@ export default function Home() {
           alert(data.error || '업로드에 실패했습니다.');
         }
       } else {
-        const text = await res.text();
-        console.error('Non-JSON response:', text);
-        alert('서버 오류가 발생했습니다. 개발자 도구 콘솔을 확인해주세요. (서버 재시작이 필요할 수 있습니다.)');
+        alert('서버 오류가 발생했습니다. 개발자 도구 콘솔을 확인해주세요.');
       }
     } catch (error) {
       console.error(error);
       alert('업로드 중 네트워크 오류가 발생했습니다.');
     } finally {
       setUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    // If the active category already has products, ask whether to replace or append
     if (categoryProducts.length > 0) {
       setPendingUploadFile(file);
       return;
     }
-
     await executeFileUpload(file, 'replace');
   };
 
@@ -395,7 +510,6 @@ export default function Home() {
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
       .map((line) => {
-        // Supports Excel tab-separated copy/paste, pipe '|', or comma ','
         const parts = line.includes('\t')
           ? line.split('\t')
           : line.includes('|')
@@ -403,7 +517,6 @@ export default function Home() {
             : line.split(',');
 
         const trimmed = parts.map((p) => p.trim());
-        // If 2 columns: [name, price] if 2nd is pure numbers, else [name, spec]
         if (trimmed.length === 2) {
           const secondIsPrice = /^[0-9,원\s]+$/.test(trimmed[1]);
           return {
@@ -429,7 +542,6 @@ export default function Home() {
     setSavingAdd(true);
     try {
       let payload: any;
-
       if (addTab === 'single') {
         if (!addForm.name.trim()) {
           alert('상품명을 입력해주세요.');
@@ -451,10 +563,7 @@ export default function Home() {
           setSavingAdd(false);
           return;
         }
-        payload = {
-          category: addForm.category,
-          items,
-        };
+        payload = { category: addForm.category, items };
       }
 
       const res = await fetch('/api/products', {
@@ -469,7 +578,6 @@ export default function Home() {
         setActiveCategory(addForm.category);
         setCurrentPage(1);
         setShowAddModal(false);
-        alert(`[${CATEGORY_META[addForm.category].label}] ${data.count}개의 상품이 추가되었습니다.`);
       } else {
         alert(data.error || '상품 추가에 실패했습니다.');
       }
@@ -481,69 +589,159 @@ export default function Home() {
     }
   };
 
-  const checkPrice = async (productId: number, productName: string, customKeyword?: string) => {
+  const checkPrice = async (
+    productId: number,
+    customKeyword?: string
+  ): Promise<Product | null> => {
     setCheckingIds((prev) => new Set(prev).add(productId));
-    setActiveSearches((prev) => [...prev, productName]);
     try {
       const res = await fetch('/api/search', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ productId, customKeyword }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId, customKeyword, includeShipping }),
       });
       const data = await res.json();
+
+      if (Array.isArray(data.blockedChannels) && data.blockedChannels.length > 0) {
+        setBlockedChannels((prev) => Array.from(new Set([...prev, ...data.blockedChannels])));
+      }
+
       if (data.success && data.product) {
         setProducts((prevProducts) => prevProducts.map((p) => (p.id === productId ? data.product : p)));
 
         if (customKeyword) {
-          if (!data.product.naverPrice && !data.product.coupangPrice) {
-            alert(
-              '키워드를 수정하여 재조회했지만 여전히 조건에 맞는 최저가를 찾지 못했습니다.\n\n- 해당 상품이 온라인에 없거나\n- 용량/수량/묶음 조건이 맞지 않아 걸러졌을 수 있습니다.'
-            );
-          } else {
-            alert('성공적으로 최저가를 찾아 반영했습니다!');
+          const m = getBestOnlineMetrics(data.product, includeShipping);
+          if (!m.hasOnlinePrice) {
+            alert('조건에 정확히 맞는 최저가를 찾지 못했습니다. 아래 유사 후보가 있다면 1클릭으로 확정하실 수 있습니다.');
           }
         }
-      } else {
-        console.error('가격 조회 실패:', data.error);
-        if (customKeyword) alert('오류가 발생했습니다: ' + (data.error || '알 수 없는 오류'));
+        return data.product;
       }
+      return null;
     } catch (error) {
       console.error(error);
+      return null;
     } finally {
       setCheckingIds((prev) => {
         const next = new Set(prev);
         next.delete(productId);
         return next;
       });
-      setActiveSearches((prev) => prev.filter((name) => name !== productName));
     }
   };
 
-  const checkAllPrices = async () => {
-    const targets = categoryProducts;
-    if (targets.length === 0) return;
-
-    setLoading(true);
-    setProgress({ current: 0, total: targets.length });
-
-    let currentCount = 0;
-    for (const product of targets) {
-      await checkPrice(product.id, product.name);
-      currentCount++;
-      setProgress({ current: currentCount, total: targets.length });
-      await new Promise((resolve) => setTimeout(resolve, 500));
+  /**
+   * High-speed parallel worker pool (3 concurrent workers) with live stop/cancel & summary report.
+   */
+  const runBatchCompare = async (targets: Product[], label: string) => {
+    const actionable = targets.filter((p) => !p.isManualOverride);
+    if (actionable.length === 0) {
+      alert('자동 조회할 대상 상품이 없습니다. (수동 고정된 항목 제외)');
+      return;
     }
 
+    stopRequestedRef.current = false;
+    setLoading(true);
+    setBatchSummary(null);
+    setProgress({ current: 0, total: actionable.length, label });
+
+    const CONCURRENCY = 3;
+    let cursor = 0;
+    let completed = 0;
+    let matched = 0;
+    let expensive = 0;
+
+    const worker = async () => {
+      while (!stopRequestedRef.current) {
+        const idx = cursor++;
+        if (idx >= actionable.length) break;
+
+        const target = actionable[idx];
+        const updated = await checkPrice(target.id);
+        completed++;
+
+        if (updated) {
+          const m = getBestOnlineMetrics(updated, includeShipping);
+          if (m.hasOnlinePrice) {
+            matched++;
+            if (m.isExpensive) expensive++;
+          }
+        }
+
+        setProgress({ current: completed, total: actionable.length, label });
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, actionable.length) }, () => worker()));
+
+    const stopped = stopRequestedRef.current;
     setLoading(false);
     setProgress(null);
-    alert(`[${activeMeta.label}] ${targets.length}개 상품의 최저가 조회가 완료되었습니다.`);
+    setBatchSummary(
+      stopped
+        ? `⏹ 사용자 요청으로 중지됨 (${completed}/${actionable.length}건 완료 · 최저가 발견 ${matched}건 · 가격 조정 필요 ${expensive}건)`
+        : `✅ [${activeMeta.label}] ${label} 완료! 총 ${actionable.length}건 중 ${matched}건 최저가 확인 · 가격 조정 필요 ${expensive}건`
+    );
   };
 
-  const formatPrice = (price?: number) => {
+  const confirmRecommendation = async (product: Product, rec: RecommendedCandidate) => {
+    const priceNum = parseInt(rec.lprice, 10);
+    if (isNaN(priceNum)) return;
+
+    const payload: Record<string, any> = {
+      id: product.id,
+      isManualOverride: true,
+      matchedTitle: rec.title,
+      matchConfidence: 'HIGH',
+      matchNote: '실무자 1클릭 확정',
+      candidateJson: null,
+    };
+
+    if (rec.channel === 'COUPANG') {
+      payload.coupangPrice = priceNum;
+      payload.coupangLink = rec.link;
+      payload.coupangShipping = rec.shipping;
+    } else if (rec.channel === 'NAVER') {
+      payload.naverPrice = priceNum;
+      payload.naverLink = rec.link;
+      payload.naverShipping = rec.shipping;
+    } else {
+      payload.openMarketPrice = priceNum;
+      payload.openMarketLink = rec.link;
+      payload.openMarketMall = rec.mallName;
+      payload.openMarketShipping = rec.shipping;
+    }
+
+    try {
+      const res = await fetch('/api/products', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success && data.product) {
+        setProducts((prev) => prev.map((p) => (p.id === product.id ? data.product : p)));
+        setExpandedRecIds((prev) => {
+          const next = new Set(prev);
+          next.delete(product.id);
+          return next;
+        });
+      }
+    } catch {
+      alert('확정 저장 중 오류가 발생했습니다.');
+    }
+  };
+
+  const formatPrice = (price?: number | null) => {
     if (price === null || price === undefined) return '-';
     return price.toLocaleString() + '원';
+  };
+
+  const renderShippingTag = (shipping?: number | null) => {
+    if (shipping === null || shipping === undefined) return null;
+    if (shipping === 0) return <span className="shipping-tag free">무료배송</span>;
+    return <span className="shipping-tag">+{shipping.toLocaleString()}원</span>;
   };
 
   const formatDate = (dateString?: string) => {
@@ -553,11 +751,8 @@ export default function Home() {
   };
 
   const toggleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.checked) {
-      setSelectedIds(sortedProducts.map((p) => p.id));
-    } else {
-      setSelectedIds([]);
-    }
+    if (e.target.checked) setSelectedIds(sortedProducts.map((p) => p.id));
+    else setSelectedIds([]);
   };
 
   const toggleSelect = (id: number) => {
@@ -589,7 +784,7 @@ export default function Home() {
 
   const handleResetOverride = async () => {
     if (!editingProduct) return;
-    if (!confirm('수동 고정을 해제하시겠습니까? 가격과 링크가 모두 초기화(미조회 상태)됩니다.')) return;
+    if (!confirm('수동 고정을 해제하고 모든 조회 가격을 초기화하시겠습니까?')) return;
 
     setSavingEdit(true);
     try {
@@ -601,8 +796,18 @@ export default function Home() {
           isManualOverride: false,
           naverPrice: '',
           naverLink: '',
+          naverShipping: '',
           coupangPrice: '',
           coupangLink: '',
+          coupangShipping: '',
+          openMarketPrice: '',
+          openMarketLink: '',
+          openMarketMall: '',
+          openMarketShipping: '',
+          matchedTitle: '',
+          matchConfidence: '',
+          matchNote: '',
+          candidateJson: '',
         }),
       });
       const data = await res.json();
@@ -612,8 +817,7 @@ export default function Home() {
       } else {
         alert('초기화에 실패했습니다.');
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
       alert('오류가 발생했습니다.');
     } finally {
       setSavingEdit(false);
@@ -629,6 +833,9 @@ export default function Home() {
       naverLink: product.naverLink || '',
       coupangPrice: product.coupangPrice ? String(product.coupangPrice) : '',
       coupangLink: product.coupangLink || '',
+      openMarketPrice: product.openMarketPrice ? String(product.openMarketPrice) : '',
+      openMarketLink: product.openMarketLink || '',
+      openMarketMall: product.openMarketMall || '',
     });
   };
 
@@ -647,6 +854,9 @@ export default function Home() {
           naverLink: editForm.naverLink,
           coupangPrice: editForm.coupangPrice,
           coupangLink: editForm.coupangLink,
+          openMarketPrice: editForm.openMarketPrice,
+          openMarketLink: editForm.openMarketLink,
+          openMarketMall: editForm.openMarketMall,
         }),
       });
       const data = await res.json();
@@ -656,8 +866,7 @@ export default function Home() {
       } else {
         alert(data.error || '저장에 실패했습니다.');
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
       alert('저장 중 오류가 발생했습니다.');
     } finally {
       setSavingEdit(false);
@@ -666,29 +875,22 @@ export default function Home() {
 
   return (
     <div className="container">
+      {/* Header */}
       <header className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
         <h1 className="title" style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
           Search
-          <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>v{packageJson.version}</span>
+          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>v{packageJson.version}</span>
         </h1>
         <div className="upload-section" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-          <button
-            className="btn-secondary"
-            onClick={() => setShowSettings(true)}
-            title="환경 설정"
-            style={{ padding: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          >
-            ⚙️ 설정
-          </button>
           <button
             className="btn-secondary"
             onClick={openAddModal}
             style={{ fontWeight: 500, borderColor: 'var(--text-color)' }}
           >
-            + 상품 직접 추가
+            + 상품 추가
           </button>
           <a href={`/api/template?category=${activeCategory}`} className="btn-secondary" style={{ textDecoration: 'none' }}>
-            {activeMeta.shortLabel} 양식
+            양식
           </a>
           <input
             type="file"
@@ -699,18 +901,50 @@ export default function Home() {
             id="excel-upload"
           />
           <label htmlFor="excel-upload" className="btn-secondary" style={{ cursor: 'pointer' }}>
-            {uploading ? '업로드 중...' : `${activeMeta.shortLabel} 엑셀 업로드`}
+            {uploading ? '업로드 중...' : '엑셀 업로드'}
           </label>
           <button
+            className="btn-secondary"
+            onClick={() => setShowSettings(true)}
+            title="네이버/쿠팡 세션 연결 및 진단"
+          >
+            🔐 세션/설정
+          </button>
+          <button
             className="btn-primary"
-            onClick={checkAllPrices}
+            onClick={() => {
+              const selectedTargets =
+                selectedIds.length > 0
+                  ? categoryProducts.filter((p) => selectedIds.includes(p.id))
+                  : categoryProducts;
+              runBatchCompare(
+                selectedTargets,
+                selectedIds.length > 0 ? `선택 ${selectedTargets.length}건 비교` : '전체 비교'
+              );
+            }}
             disabled={loading || categoryProducts.length === 0}
-            style={{ minWidth: '140px' }}
+            style={{ minWidth: '165px', fontWeight: 600 }}
           >
             {loading && progress
               ? `조회 중 (${progress.current}/${progress.total})`
-              : `${activeMeta.shortLabel} 전체 갱신`}
+              : selectedIds.length > 0
+                ? `⚡ 선택 ${selectedIds.length}건 원클릭 비교`
+                : `⚡ ${activeMeta.shortLabel} 원클릭 전체 비교`}
           </button>
+          {unsearchedCount > 0 && !loading && (
+            <button
+              className="btn-secondary"
+              onClick={() =>
+                runBatchCompare(
+                  categoryProducts.filter((p) => !getBestOnlineMetrics(p, includeShipping).hasOnlinePrice),
+                  '미검색 재시도'
+                )
+              }
+              style={{ borderColor: '#f59e0b', color: '#b45309', backgroundColor: '#fffbeb', fontWeight: 500 }}
+            >
+              🔄 미검색 재시도 ({unsearchedCount})
+            </button>
+          )}
           {selectedIds.length > 0 && (
             <>
               <a
@@ -718,14 +952,14 @@ export default function Home() {
                 className="btn-secondary"
                 style={{ textDecoration: 'none', backgroundColor: '#fffbe1', borderColor: '#fef08a', color: '#a16207', fontWeight: 600 }}
               >
-                ⚡ 2차 검증 ({selectedIds.length})
+                2차 검증 ({selectedIds.length})
               </a>
               <button
                 className="btn-secondary"
                 onClick={deleteSelected}
                 style={{ color: 'white', backgroundColor: '#e11d48', borderColor: '#e11d48' }}
               >
-                선택 삭제 ({selectedIds.length})
+                삭제 ({selectedIds.length})
               </button>
             </>
           )}
@@ -754,33 +988,170 @@ export default function Home() {
           })}
         </div>
         <div className="category-hint">
-          적용 필터: {activeMeta.description}
+          네이버 · 쿠팡 · 오픈마켓(G마켓·11번가·옥션·롯데ON) 3채널 자동 비교 | {activeMeta.description}
         </div>
       </div>
 
-      {loading && progress && (
-        <div style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#fafafa', border: '1px solid var(--border)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.85rem' }}>
-            <span>[{activeMeta.label}] 전체 가격 비교 진행 중...</span>
-            <span style={{ fontWeight: 500 }}>
-              {Math.round((progress.current / progress.total) * 100)}% ({progress.current} / {progress.total})
-            </span>
+      {/* Blocked Session Helper Banner (only shown if Naver/Coupang requests human check) */}
+      {blockedChannels.length > 0 && (
+        <div
+          style={{
+            marginBottom: '1rem',
+            padding: '0.75rem 1rem',
+            backgroundColor: '#fffbeb',
+            border: '1px solid #fcd34d',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '1rem',
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ fontSize: '0.84rem', color: '#92400e' }}>
+            <b>🔐 보안 확인 안내:</b>{' '}
+            {blockedChannels.map((c) => (c === 'naver' ? '네이버 쇼핑' : '쿠팡')).join(', ')}에서 본인 확인(로그인/보안문자)을 요청했습니다.
+            오른쪽 버튼으로 창을 열어 1회만 확인해 두시면 세션이 유지되어 자동으로 이어서 조회됩니다. *(오픈마켓 가격은 정상 조회됨)*
           </div>
-          <div style={{ width: '100%', height: '8px', backgroundColor: '#e5e5e5', borderRadius: '4px', overflow: 'hidden' }}>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            {blockedChannels.includes('naver') && (
+              <button className="btn-secondary btn-small" onClick={() => openSessionWindow('naver')} style={{ fontWeight: 600 }}>
+                네이버 세션 열기
+              </button>
+            )}
+            {blockedChannels.includes('coupang') && (
+              <button className="btn-secondary btn-small" onClick={() => openSessionWindow('coupang')} style={{ fontWeight: 600 }}>
+                쿠팡 세션 열기
+              </button>
+            )}
+            <button
+              className="btn-secondary btn-small"
+              onClick={() => setBlockedChannels([])}
+              style={{ color: '#64748b' }}
+            >
+              닫기
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Active Batch Progress Bar with Stop Button */}
+      {loading && progress && (
+        <div style={{ marginBottom: '1rem', padding: '0.9rem 1rem', backgroundColor: '#fafafa', border: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', fontSize: '0.85rem' }}>
+            <span>
+              <b>[{activeMeta.label}]</b> {progress.label} 진행 중... (3채널 고속 병렬 탐색)
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <span style={{ fontWeight: 600 }}>
+                {Math.round((progress.current / progress.total) * 100)}% ({progress.current} / {progress.total})
+              </span>
+              <button
+                className="btn-secondary btn-small"
+                onClick={() => {
+                  stopRequestedRef.current = true;
+                }}
+                style={{ color: '#e11d48', borderColor: '#fda4af', backgroundColor: '#fff1f2', fontWeight: 600 }}
+              >
+                ⏹ 중지
+              </button>
+            </div>
+          </div>
+          <div style={{ width: '100%', height: '8px', backgroundColor: '#e5e5e5', overflow: 'hidden' }}>
             <div
               style={{
                 width: `${(progress.current / progress.total) * 100}%`,
                 height: '100%',
                 backgroundColor: 'var(--primary)',
-                transition: 'width 0.3s ease',
+                transition: 'width 0.25s ease',
               }}
             />
           </div>
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+      {/* Batch Completion Summary Banner */}
+      {batchSummary && !loading && (
+        <div
+          style={{
+            marginBottom: '1rem',
+            padding: '0.7rem 1rem',
+            backgroundColor: '#f0fdf4',
+            border: '1px solid #bbf7d0',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            fontSize: '0.85rem',
+            color: '#166534',
+          }}
+        >
+          <span>{batchSummary}</span>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {adjustNeededCount > 0 && (
+              <button
+                className="btn-secondary btn-small"
+                onClick={() => {
+                  setFilterStatus('ADJUST_NEEDED');
+                  setSortConfig({ key: 'diff', direction: 'asc' });
+                  setCurrentPage(1);
+                }}
+                style={{ borderColor: '#16a34a', color: '#15803d', fontWeight: 600 }}
+              >
+                조정 필요 항목만 보기 ({adjustNeededCount})
+              </button>
+            )}
+            <button className="btn-secondary btn-small" onClick={() => setBatchSummary(null)}>
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Clickable Summary Dashboard Cards */}
+      <div className="summary-grid">
+        <button
+          className={`summary-card ${filterStatus === 'ALL' ? 'active' : ''}`}
+          onClick={() => { setFilterStatus('ALL'); setCurrentPage(1); }}
+        >
+          <span className="summary-card-label">전체 상품</span>
+          <span className="summary-card-value">{categoryProducts.length}</span>
+        </button>
+        <button
+          className={`summary-card ${filterStatus === 'FOUND' ? 'active' : ''}`}
+          onClick={() => { setFilterStatus('FOUND'); setCurrentPage(1); }}
+        >
+          <span className="summary-card-label">✅ 최저가 확인됨</span>
+          <span className="summary-card-value" style={{ color: '#059669' }}>{foundCount}</span>
+        </button>
+        <button
+          className={`summary-card ${filterStatus === 'ADJUST_NEEDED' ? 'active' : ''}`}
+          onClick={() => {
+            setFilterStatus('ADJUST_NEEDED');
+            setSortConfig({ key: 'diff', direction: 'asc' });
+            setCurrentPage(1);
+          }}
+        >
+          <span className="summary-card-label">🔴 가격 조정 필요</span>
+          <span className="summary-card-value" style={{ color: '#e11d48' }}>{adjustNeededCount}</span>
+        </button>
+        <button
+          className={`summary-card ${filterStatus === 'CHECK_RECOMMENDED' ? 'active' : ''}`}
+          onClick={() => { setFilterStatus('CHECK_RECOMMENDED'); setCurrentPage(1); }}
+        >
+          <span className="summary-card-label">🟡 옵션/맛 확인 권장</span>
+          <span className="summary-card-value" style={{ color: '#d97706' }}>{checkRecommendedCount}</span>
+        </button>
+        <button
+          className={`summary-card ${filterStatus === 'UNSEARCHED' ? 'active' : ''}`}
+          onClick={() => { setFilterStatus('UNSEARCHED'); setCurrentPage(1); }}
+        >
+          <span className="summary-card-label">⚠️ 미검색</span>
+          <span className="summary-card-value" style={{ color: '#64748b' }}>{unsearchedCount}</span>
+        </button>
+      </div>
+
+      {/* Filter & Export Controls */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.85rem', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
           <div style={{ position: 'relative' }}>
             <input
               type="text"
@@ -795,9 +1166,8 @@ export default function Home() {
                 padding: '0.4rem 0.75rem',
                 paddingLeft: '2rem',
                 border: '1px solid var(--border)',
-                borderRadius: 'var(--radius)',
                 fontSize: '0.85rem',
-                width: '240px',
+                width: '230px',
                 outline: 'none',
                 fontFamily: 'inherit',
                 backgroundColor: 'var(--bg-color)',
@@ -810,25 +1180,12 @@ export default function Home() {
           </div>
 
           <select
-            value={filterStatus}
-            onChange={(e) => {
-              setFilterStatus(e.target.value as any);
-              setCurrentPage(1);
-            }}
-            style={{ padding: '0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }}
-          >
-            <option value="ALL">전체 상태 보기</option>
-            <option value="ADJUST_NEEDED">가격 조정 필요 항목만 보기</option>
-            <option value="UNSEARCHED">미검색 항목 (- 표시) 보기</option>
-          </select>
-
-          <select
             value={filterSupplier}
             onChange={(e) => {
               setFilterSupplier(e.target.value);
               setCurrentPage(1);
             }}
-            style={{ padding: '0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }}
+            style={{ padding: '0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)' }}
           >
             <option value="ALL">전체 공급사</option>
             {suppliers.map((sup) => (
@@ -837,48 +1194,69 @@ export default function Home() {
               </option>
             ))}
           </select>
+
+          <label
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              fontSize: '0.83rem',
+              cursor: 'pointer',
+              padding: '0.38rem 0.65rem',
+              border: '1px solid var(--border)',
+              backgroundColor: includeShipping ? '#f8fafc' : '#fff',
+              fontWeight: includeShipping ? 600 : 400,
+            }}
+            title="체크 시 각 채널의 배송비를 더한 실구매가 기준으로 최저가와 차액을 비교합니다."
+          >
+            <input
+              type="checkbox"
+              checked={includeShipping}
+              onChange={(e) => setIncludeShipping(e.target.checked)}
+            />
+            배송비 포함 비교
+          </label>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
           <button
             className="btn-secondary"
-            onClick={exportToExcel}
-            style={{ fontSize: '0.85rem', padding: '0.3rem 0.6rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+            onClick={() => exportToExcel(true)}
+            style={{ fontSize: '0.82rem', padding: '0.35rem 0.7rem', borderColor: '#e11d48', color: '#e11d48', fontWeight: 500 }}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="7 10 12 15 17 10"></polyline>
-              <line x1="12" y1="15" x2="12" y2="3"></line>
-            </svg>
-            현재 목록 엑셀 저장
+            📊 조정 리포트 저장 ({adjustNeededCount})
           </button>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>페이지당 보기:</span>
-            <select
-              value={itemsPerPage}
-              onChange={(e) => {
-                setItemsPerPage(Number(e.target.value));
-                setCurrentPage(1);
-              }}
-              style={{ padding: '0.3rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '0' }}
-            >
-              <option value={10}>10개</option>
-              <option value={20}>20개</option>
-              <option value={30}>30개</option>
-              <option value={50}>50개</option>
-              <option value={filteredProducts.length > 0 ? filteredProducts.length : 1000}>전체보기</option>
-            </select>
-          </div>
+          <button
+            className="btn-secondary"
+            onClick={() => exportToExcel(false)}
+            style={{ fontSize: '0.82rem', padding: '0.35rem 0.7rem' }}
+          >
+            전체 엑셀 저장
+          </button>
+          <select
+            value={itemsPerPage}
+            onChange={(e) => {
+              setItemsPerPage(Number(e.target.value));
+              setCurrentPage(1);
+            }}
+            style={{ padding: '0.35rem', fontSize: '0.82rem', border: '1px solid var(--border)' }}
+          >
+            <option value={10}>10개씩</option>
+            <option value={20}>20개씩</option>
+            <option value={50}>50개씩</option>
+            <option value={100}>100개씩</option>
+            <option value={filteredProducts.length > 0 ? filteredProducts.length : 1000}>전체보기</option>
+          </select>
         </div>
       </div>
 
+      {/* Main 3-Channel Table */}
       <div className="card">
         <div className="table-container">
           <table>
             <thead>
               <tr style={{ backgroundColor: '#f8fafc' }}>
-                <th style={{ width: '40px', textAlign: 'center' }}>
+                <th style={{ width: '38px', textAlign: 'center' }}>
                   <input
                     type="checkbox"
                     onChange={toggleSelectAll}
@@ -886,50 +1264,53 @@ export default function Home() {
                   />
                 </th>
                 <th onClick={() => handleSort('name')} style={{ cursor: 'pointer', userSelect: 'none' }}>
-                  상품명{renderSortIndicator('name')}
+                  상품명 & 매칭 근거{renderSortIndicator('name')}
                 </th>
-                <th onClick={() => handleSort('currentPrice')} style={{ cursor: 'pointer', userSelect: 'none' }}>
-                  현재 판매가{renderSortIndicator('currentPrice')}
+                <th onClick={() => handleSort('currentPrice')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                  우리 판매가{renderSortIndicator('currentPrice')}
                 </th>
-                <th onClick={() => handleSort('naverPrice')} style={{ cursor: 'pointer', userSelect: 'none' }}>
-                  온라인 최저가{renderSortIndicator('naverPrice')}
+                <th onClick={() => handleSort('naverPrice')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                  네이버 최저가{renderSortIndicator('naverPrice')}
                 </th>
-                <th onClick={() => handleSort('coupangPrice')} style={{ cursor: 'pointer', userSelect: 'none' }}>
+                <th onClick={() => handleSort('coupangPrice')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
                   쿠팡 최저가{renderSortIndicator('coupangPrice')}
                 </th>
-                <th>상태</th>
-                <th>관리</th>
+                <th onClick={() => handleSort('openMarketPrice')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                  오픈마켓 최저가{renderSortIndicator('openMarketPrice')}
+                </th>
+                <th onClick={() => handleSort('diff')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                  최저가 차액 / 상태{renderSortIndicator('diff')}
+                </th>
+                <th style={{ whiteSpace: 'nowrap' }}>관리</th>
               </tr>
             </thead>
             <tbody>
               {sortedProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '2.5rem', color: '#64748b' }}>
+                  <td colSpan={8} style={{ textAlign: 'center', padding: '2.5rem', color: '#64748b' }}>
                     {categoryProducts.length === 0 ? (
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
                         <div>
-                          등록된 <b>{activeMeta.label}</b> 상품이 없습니다. 엑셀을 업로드하거나 직접 상품을 추가해주세요.
+                          등록된 <b>{activeMeta.label}</b> 상품이 없습니다. 엑셀을 업로드하거나 직접 추가해주세요.
                         </div>
                         <button className="btn-primary" onClick={openAddModal}>
                           + {activeMeta.shortLabel} 상품 직접 추가하기
                         </button>
                       </div>
                     ) : (
-                      '조건에 맞는 상품이 없습니다.'
+                      '현재 필터 조건에 맞는 상품이 없습니다.'
                     )}
                   </td>
                 </tr>
               ) : (
                 sortedProducts.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage).map((product) => {
-                  const hasNaverPrice = product.naverPrice !== null && product.naverPrice !== undefined;
-                  const hasCoupangPrice = product.coupangPrice !== null && product.coupangPrice !== undefined;
+                  const metrics = getBestOnlineMetrics(product, includeShipping);
+                  const recommendations = !metrics.hasOnlinePrice ? parseRecommendations(product.candidateJson) : [];
+                  const isRecOpen = expandedRecIds.has(product.id);
 
-                  let lowestOnlinePrice = Infinity;
-                  if (hasNaverPrice) lowestOnlinePrice = Math.min(lowestOnlinePrice, product.naverPrice!);
-                  if (hasCoupangPrice) lowestOnlinePrice = Math.min(lowestOnlinePrice, product.coupangPrice!);
-
-                  const hasOnlinePrice = hasNaverPrice || hasCoupangPrice;
-                  const isExpensive = hasOnlinePrice && product.currentPrice > lowestOnlinePrice;
+                  const nEff = getEffectiveChannelPrice(product.naverPrice, product.naverShipping, includeShipping);
+                  const cEff = getEffectiveChannelPrice(product.coupangPrice, product.coupangShipping, includeShipping);
+                  const oEff = getEffectiveChannelPrice(product.openMarketPrice, product.openMarketShipping, includeShipping);
 
                   return (
                     <tr key={product.id}>
@@ -940,129 +1321,219 @@ export default function Home() {
                           onChange={() => toggleSelect(product.id)}
                         />
                       </td>
-                      <td style={{ fontWeight: 500 }}>
-                        {product.name}
-                        {product.spec && (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.8em', marginLeft: '4px' }}>{product.spec}</span>
-                        )}
+                      <td style={{ minWidth: '250px' }}>
+                        <div style={{ fontWeight: 500 }}>
+                          {product.name}
+                          {product.spec && (
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.82em', marginLeft: '5px' }}>{product.spec}</span>
+                          )}
+                        </div>
                         {product.supplier && (
-                          <div style={{ color: '#8b5cf6', fontSize: '0.75rem', marginTop: '4px' }}>{product.supplier}</div>
+                          <div style={{ color: '#8b5cf6', fontSize: '0.73rem', marginTop: '2px' }}>{product.supplier}</div>
+                        )}
+
+                        {/* Transparent Match Evidence (no need to open external links!) */}
+                        {product.matchedTitle && (
+                          <div className="matched-meta">
+                            {product.matchConfidence === 'HIGH' ? (
+                              <span className="pill-confidence-high">🟢 정확 일치</span>
+                            ) : (
+                              <span className="pill-confidence-med" title={product.matchNote || '확인 권장'}>
+                                🟡 {product.matchNote || '확인 권장'}
+                              </span>
+                            )}
+                            <span className="matched-title-text" title={product.matchedTitle}>
+                              매칭: {product.matchedTitle}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Inline 1-Click Recommendation Drawer for Unmatched Items */}
+                        {recommendations.length > 0 && (
+                          <div style={{ marginTop: '6px' }}>
+                            <button
+                              type="button"
+                              className="btn-secondary btn-small"
+                              style={{ fontSize: '0.72rem', padding: '2px 7px', borderColor: '#cbd5e1', color: '#334155' }}
+                              onClick={() => {
+                                setExpandedRecIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(product.id)) next.delete(product.id);
+                                  else next.add(product.id);
+                                  return next;
+                                });
+                              }}
+                            >
+                              💡 유사 후보 {recommendations.length}건 {isRecOpen ? '접기 ▲' : '바로 확정 ▼'}
+                            </button>
+                            {isRecOpen && (
+                              <div className="rec-box">
+                                {recommendations.map((rec, i) => (
+                                  <div key={i} className="rec-item">
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                      <div style={{ fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={rec.title}>
+                                        <span className="mall-tag" style={{ marginRight: '5px' }}>{rec.mallName}</span>
+                                        {rec.title}
+                                      </div>
+                                      <div style={{ color: '#475569', marginTop: '2px' }}>
+                                        <b>{Number(rec.lprice).toLocaleString()}원</b>{' '}
+                                        {renderShippingTag(rec.shipping)}
+                                        <a href={rec.link} target="_blank" rel="noreferrer" style={{ marginLeft: '8px', fontSize: '0.7rem' }}>
+                                          보기
+                                        </a>
+                                      </div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="btn-primary btn-small"
+                                      style={{ padding: '3px 8px', whiteSpace: 'nowrap' }}
+                                      onClick={() => confirmRecommendation(product, rec)}
+                                    >
+                                      확정
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </td>
-                      <td className="price">{formatPrice(product.currentPrice)}</td>
-                      <td>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                          <span className={`price ${hasNaverPrice && product.currentPrice > product.naverPrice! ? 'price-expensive' : ''}`}>
-                            {formatPrice(product.naverPrice)}
-                          </span>
-                          {product.naverLink && (
-                            <a href={product.naverLink} target="_blank" rel="noreferrer" className="link-icon">
-                              🔗 최저가 바로가기
-                            </a>
-                          )}
-                          <a
-                            href={`https://search.shopping.naver.com/search/all?query=${encodeURIComponent(
-                              product.spec ? `${product.name} ${product.spec}` : product.name
-                            )}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="link-icon"
-                          >
-                            🔎 쇼핑 검색화면
-                          </a>
-                        </div>
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                          <span className={`price ${hasCoupangPrice && product.currentPrice > product.coupangPrice! ? 'price-expensive' : ''}`}>
-                            {formatPrice(product.coupangPrice)}
-                          </span>
-                          {product.coupangLink && (
-                            <a href={product.coupangLink} target="_blank" rel="noreferrer" className="link-icon">
-                              🔗 쿠팡 바로가기
-                            </a>
-                          )}
-                          <button
-                            onClick={() => {
-                              const kw = `${product.name} ${product.spec || ''}`.trim();
-                              navigator.clipboard.writeText(kw);
 
-                              const hideUntil = localStorage.getItem('hideCopyAlertUntil');
-                              if (hideUntil && new Date().getTime() < parseInt(hideUntil)) {
-                                window.open('https://fallcent.com/', '_blank');
-                              } else {
-                                setCopyAlertProduct({ name: product.name, searchKeyword: kw });
-                              }
-                            }}
-                            className="link-icon"
-                            style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', font: 'inherit', color: '#6366f1' }}
-                          >
-                            🔎 최저가 검색
-                          </button>
+                      {/* Current Selling Price */}
+                      <td className="price" style={{ whiteSpace: 'nowrap' }}>
+                        {product.currentPrice > 0 ? formatPrice(product.currentPrice) : <span style={{ color: '#94a3b8' }}>미입력</span>}
+                      </td>
+
+                      {/* Channel 1: Naver */}
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                          <span className={`price ${nEff !== null && product.currentPrice > 0 && product.currentPrice > nEff ? 'price-expensive' : ''}`}>
+                            {formatPrice(nEff)}
+                          </span>
+                          {renderShippingTag(product.naverShipping)}
+                          {product.naverLink ? (
+                            <a href={product.naverLink} target="_blank" rel="noreferrer" className="link-icon">
+                              🔗 바로가기
+                            </a>
+                          ) : (
+                            <a
+                              href={`https://search.shopping.naver.com/search/all?query=${encodeURIComponent(
+                                product.spec ? `${product.name} ${product.spec}` : product.name
+                              )}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="link-icon"
+                              style={{ opacity: 0.7 }}
+                            >
+                              🔎 직접보기
+                            </a>
+                          )}
                         </div>
                       </td>
+
+                      {/* Channel 2: Coupang */}
                       <td>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                          <span className={`price ${cEff !== null && product.currentPrice > 0 && product.currentPrice > cEff ? 'price-expensive' : ''}`}>
+                            {formatPrice(cEff)}
+                          </span>
+                          {renderShippingTag(product.coupangShipping)}
+                          {product.coupangLink ? (
+                            <a href={product.coupangLink} target="_blank" rel="noreferrer" className="link-icon">
+                              🔗 바로가기
+                            </a>
+                          ) : (
+                            <a
+                              href={`https://www.coupang.com/np/search?q=${encodeURIComponent(
+                                product.spec ? `${product.name} ${product.spec}` : product.name
+                              )}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="link-icon"
+                              style={{ opacity: 0.7 }}
+                            >
+                              🔎 직접보기
+                            </a>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Channel 3: Open Market (Gmarket / 11st / Auction / LotteON / Enuri / Danawa) */}
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                          <span className={`price ${oEff !== null && product.currentPrice > 0 && product.currentPrice > oEff ? 'price-expensive' : ''}`}>
+                            {formatPrice(oEff)}
+                          </span>
+                          {product.openMarketMall && <span className="mall-tag">{product.openMarketMall}</span>}
+                          {renderShippingTag(product.openMarketShipping)}
+                          {product.openMarketLink && (
+                            <a href={product.openMarketLink} target="_blank" rel="noreferrer" className="link-icon">
+                              🔗 바로가기
+                            </a>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Diff & Status */}
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center', textAlign: 'center' }}>
                           {checkingIds.has(product.id) ? (
                             <span className="badge" style={{ backgroundColor: '#e0e7ff', color: '#4338ca', fontWeight: 600 }}>
-                              🔍 탐색 중...
+                              🔍 3채널 탐색 중...
                             </span>
-                          ) : hasOnlinePrice ? (
-                            isExpensive ? (
-                              <span className="badge badge-red">가격 조정 필요</span>
-                            ) : (
-                              <span className="badge badge-green">적정가</span>
-                            )
+                          ) : metrics.hasOnlinePrice ? (
+                            <>
+                              {metrics.isExpensive ? (
+                                <span className="badge badge-red">가격 조정 필요</span>
+                              ) : (
+                                <span className="badge badge-green">적정가</span>
+                              )}
+                              {metrics.diffAmount !== null && (
+                                <span className={metrics.diffAmount < 0 ? 'diff-expensive' : 'diff-cheaper'}>
+                                  {metrics.diffAmount < 0
+                                    ? `${metrics.diffAmount.toLocaleString()}원 (${metrics.diffPct}%)`
+                                    : `+${metrics.diffAmount.toLocaleString()}원`}
+                                </span>
+                              )}
+                              <span style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                                최저: {metrics.lowestLabel}
+                              </span>
+                            </>
                           ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-                              <span className="badge" style={{ backgroundColor: '#f1f5f9' }}>미검색</span>
-                              <a
-                                href={`https://www.google.com/search?q=${encodeURIComponent(product.name + ' ' + (product.spec || ''))}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="link-icon"
-                                style={{ fontSize: '0.75rem', color: '#ea4335', display: 'flex', alignItems: 'center', gap: '2px', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'none' }}
-                                title="구글에서 상품 검색하기"
-                              >
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M2 12a10 10 0 1 0 20 0 10 10 0 1 0-20 0"></path>
-                                  <path d="M12 2a10 10 0 0 1 10 10"></path>
-                                  <path d="M12 22a10 10 0 0 1-10-10"></path>
-                                  <path d="M2 12h20"></path>
-                                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-                                </svg>
-                                구글 검색
-                              </a>
-                            </div>
+                            <span className="badge" style={{ backgroundColor: '#f1f5f9', color: '#64748b' }}>미검색</span>
                           )}
 
                           {product.lastCheckedAt && !checkingIds.has(product.id) && (
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                              {formatDate(product.lastCheckedAt)} 검색
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                              {formatDate(product.lastCheckedAt)}
                             </span>
                           )}
                         </div>
                       </td>
+
+                      {/* Actions */}
                       <td>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           <button
                             className="btn-secondary btn-small"
-                            onClick={() => checkPrice(product.id, product.name)}
+                            onClick={() => checkPrice(product.id)}
                             disabled={checkingIds.has(product.id) || loading || product.isManualOverride}
-                            style={{ minWidth: '70px', opacity: product.isManualOverride ? 0.6 : 1 }}
-                            title={product.isManualOverride ? '수동으로 가격이 고정되었습니다.' : ''}
+                            style={{ minWidth: '72px', opacity: product.isManualOverride ? 0.6 : 1 }}
                           >
-                            {checkingIds.has(product.id) ? '조회 중...' : product.isManualOverride ? '🔒 수동 고정' : '가격 확인'}
+                            {checkingIds.has(product.id) ? '조회 중...' : product.isManualOverride ? '🔒 고정' : '가격 확인'}
                           </button>
 
                           <button
                             className="btn-secondary btn-small"
-                            onClick={() => {
-                              setTuningProduct({ id: product.id, name: product.name, keyword: product.spec ? `${product.name} ${product.spec}` : product.name });
-                            }}
+                            onClick={() =>
+                              setTuningProduct({
+                                id: product.id,
+                                name: product.name,
+                                keyword: product.spec ? `${product.name} ${product.spec}` : product.name,
+                              })
+                            }
                             disabled={checkingIds.has(product.id) || loading || product.isManualOverride}
-                            style={{ minWidth: '70px', padding: '4px', fontSize: '0.75rem', backgroundColor: '#f8fafc' }}
-                            title="이름이 길거나 기호가 많아 검색이 안 될 때 키워드를 수정해서 다시 검색합니다."
+                            style={{ minWidth: '72px', padding: '3px', fontSize: '0.72rem', backgroundColor: '#f8fafc' }}
                           >
                             키워드 수정
                           </button>
@@ -1070,7 +1541,7 @@ export default function Home() {
                           <button
                             className="btn-secondary btn-small"
                             onClick={() => handleEditClick(product)}
-                            style={{ minWidth: '70px', padding: '4px' }}
+                            style={{ minWidth: '72px', padding: '3px', fontSize: '0.72rem' }}
                           >
                             수기 입력
                           </button>
@@ -1108,7 +1579,7 @@ export default function Home() {
         )}
       </div>
 
-      {/* Upload Mode Choice Modal (Replace vs Append within Active Category) */}
+      {/* Upload Mode Choice Modal */}
       {pendingUploadFile && (
         <div
           style={{
@@ -1121,7 +1592,7 @@ export default function Home() {
           }}
         >
           <div
-            style={{ background: '#fff', padding: '24px', borderRadius: '8px', width: '420px', maxWidth: '90%' }}
+            style={{ background: '#fff', padding: '24px', width: '420px', maxWidth: '90%' }}
             onClick={(e) => e.stopPropagation()}
           >
             <h2 style={{ marginTop: 0, marginBottom: '12px', fontSize: '1.15rem', fontWeight: 600 }}>
@@ -1135,11 +1606,7 @@ export default function Home() {
               다른 카테고리 탭의 상품 데이터는 영향을 받지 않고 안전하게 유지됩니다.
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <button
-                className="btn-primary"
-                onClick={() => executeFileUpload(pendingUploadFile, 'append')}
-                style={{ padding: '10px' }}
-              >
+              <button className="btn-primary" onClick={() => executeFileUpload(pendingUploadFile, 'append')} style={{ padding: '10px' }}>
                 기존 {activeMeta.shortLabel} 목록에 추가하기 (추천)
               </button>
               <button
@@ -1164,7 +1631,7 @@ export default function Home() {
         </div>
       )}
 
-      {/* Manual Product Add Modal (Single + Bulk Paste) */}
+      {/* Manual Product Add Modal */}
       {showAddModal && (
         <div
           style={{
@@ -1174,14 +1641,11 @@ export default function Home() {
           onClick={() => !savingAdd && setShowAddModal(false)}
         >
           <div
-            style={{ background: '#fff', padding: '24px', borderRadius: '8px', width: '500px', maxWidth: '92%' }}
+            style={{ background: '#fff', padding: '24px', width: '500px', maxWidth: '92%' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 style={{ marginTop: 0, marginBottom: '14px', fontSize: '1.2rem', fontWeight: 600 }}>
-              상품 직접 추가
-            </h2>
+            <h2 style={{ marginTop: 0, marginBottom: '14px', fontSize: '1.2rem', fontWeight: 600 }}>상품 직접 추가</h2>
 
-            {/* Category selector inside modal */}
             <div style={{ marginBottom: '14px' }}>
               <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
                 저장할 카테고리
@@ -1212,7 +1676,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Single vs Bulk toggle */}
             <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: '16px' }}>
               <button
                 type="button"
@@ -1278,7 +1741,7 @@ export default function Home() {
                   </div>
                   <div style={{ flex: 1 }}>
                     <label style={{ display: 'block', fontSize: '0.8rem', marginBottom: '4px', fontWeight: 500 }}>
-                      현재 판매가 (원)
+                      우리 판매가 (원)
                     </label>
                     <input
                       type="number"
@@ -1333,7 +1796,7 @@ export default function Home() {
                     addForm.category === 'HEALTH_FOOD'
                       ? '종근당건강 락토핏 골드, 50포, 13900, 종근당건강\n고려은단 비타민C 1000, 120정, 15500, 고려은단'
                       : addForm.category === 'FOOD'
-                        ? '동원 라이트스탠다드 참치, 85g 12캔, 18900, 동원F&B\n농심 신라면, 120g 5입, 4600, 농심'
+                        ? '아이배냇 베베 핑거요거트, 20g, 5500, 아이배냇\n동원 라이트스탠다드 참치, 85g 12캔, 18900, 동원F&B'
                         : '토니모리 프리미엄RX 제비집 아이크림, 70ml, 29000, 토니모리'
                   }
                   style={{
@@ -1374,151 +1837,128 @@ export default function Home() {
           onClick={() => !savingEdit && setEditingProduct(null)}
         >
           <div
-            style={{ background: '#fff', padding: '24px', borderRadius: '8px', width: '400px', maxWidth: '90%' }}
+            style={{ background: '#fff', padding: '24px', width: '430px', maxWidth: '92%' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 style={{ marginTop: 0, marginBottom: '20px', fontSize: '1.25rem', fontWeight: 600 }}>가격 및 링크 수기 입력</h2>
-            <div style={{ maxHeight: '60vh', overflowY: 'auto', paddingRight: '8px' }}>
-              <div className="form-group" style={{ marginBottom: '12px' }}>
-                <label>카테고리</label>
-                <div style={{ marginTop: '4px' }}>
-                  <select
-                    value={editForm.category}
-                    onChange={(e) => setEditForm({ ...editForm, category: normalizeCategory(e.target.value) })}
-                    style={{ width: '100%', padding: '0.45rem', border: '1px solid var(--border)', fontSize: '0.85rem' }}
-                  >
-                    {CATEGORY_LIST.map((catId) => (
-                      <option key={catId} value={catId}>
-                        {CATEGORY_META[catId].icon} {CATEGORY_META[catId].label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+            <h2 style={{ marginTop: 0, marginBottom: '16px', fontSize: '1.2rem', fontWeight: 600 }}>가격 및 링크 수기 입력</h2>
+            <div style={{ maxHeight: '62vh', overflowY: 'auto', paddingRight: '6px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div>
+                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '4px' }}>카테고리</label>
+                <select
+                  value={editForm.category}
+                  onChange={(e) => setEditForm({ ...editForm, category: normalizeCategory(e.target.value) })}
+                  style={{ width: '100%', padding: '0.45rem', border: '1px solid var(--border)', fontSize: '0.85rem' }}
+                >
+                  {CATEGORY_LIST.map((catId) => (
+                    <option key={catId} value={catId}>
+                      {CATEGORY_META[catId].icon} {CATEGORY_META[catId].label}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <div className="form-group" style={{ marginBottom: '12px' }}>
-                <label>현재 판매가</label>
-                <div style={{ position: 'relative', marginTop: '4px' }}>
-                  <input
-                    type="number"
-                    value={editForm.currentPrice}
-                    onChange={(e) => setEditForm({ ...editForm, currentPrice: e.target.value })}
-                    placeholder="숫자만 입력"
-                    className="search-input"
-                    style={{ width: '100%', paddingRight: '28px' }}
-                  />
-                  {editForm.currentPrice && (
-                    <button
-                      onClick={() => setEditForm({ ...editForm, currentPrice: '' })}
-                      style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '4px', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                      title="비우기"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
+              <div>
+                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '4px' }}>우리 판매가</label>
+                <input
+                  type="number"
+                  value={editForm.currentPrice}
+                  onChange={(e) => setEditForm({ ...editForm, currentPrice: e.target.value })}
+                  placeholder="숫자만 입력"
+                  className="search-input"
+                  style={{ width: '100%', padding: '7px 10px', border: '1px solid var(--border)' }}
+                />
               </div>
-              <div className="form-group" style={{ marginBottom: '12px' }}>
-                <label>네이버 최저가</label>
-                <div style={{ position: 'relative', marginTop: '4px' }}>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '4px' }}>네이버 최저가</label>
                   <input
                     type="number"
                     value={editForm.naverPrice}
                     onChange={(e) => setEditForm({ ...editForm, naverPrice: e.target.value })}
-                    placeholder="숫자만 입력"
                     className="search-input"
-                    style={{ width: '100%', paddingRight: '28px' }}
+                    style={{ width: '100%', padding: '7px 10px', border: '1px solid var(--border)' }}
                   />
-                  {editForm.naverPrice && (
-                    <button
-                      onClick={() => setEditForm({ ...editForm, naverPrice: '' })}
-                      style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '4px', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                      title="비우기"
-                    >
-                      ✕
-                    </button>
-                  )}
                 </div>
-              </div>
-              <div className="form-group" style={{ marginBottom: '12px' }}>
-                <label>네이버 링크</label>
-                <div style={{ position: 'relative', marginTop: '4px' }}>
-                  <input
-                    type="text"
-                    value={editForm.naverLink}
-                    onChange={(e) => setEditForm({ ...editForm, naverLink: e.target.value })}
-                    placeholder="https://..."
-                    className="search-input"
-                    style={{ width: '100%', paddingRight: '28px' }}
-                  />
-                  {editForm.naverLink && (
-                    <button
-                      onClick={() => setEditForm({ ...editForm, naverLink: '' })}
-                      style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '4px', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                      title="비우기"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div className="form-group" style={{ marginBottom: '12px' }}>
-                <label>쿠팡 최저가</label>
-                <div style={{ position: 'relative', marginTop: '4px' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '4px' }}>쿠팡 최저가</label>
                   <input
                     type="number"
                     value={editForm.coupangPrice}
                     onChange={(e) => setEditForm({ ...editForm, coupangPrice: e.target.value })}
-                    placeholder="숫자만 입력"
                     className="search-input"
-                    style={{ width: '100%', paddingRight: '28px' }}
+                    style={{ width: '100%', padding: '7px 10px', border: '1px solid var(--border)' }}
                   />
-                  {editForm.coupangPrice && (
-                    <button
-                      onClick={() => setEditForm({ ...editForm, coupangPrice: '' })}
-                      style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '4px', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                      title="비우기"
-                    >
-                      ✕
-                    </button>
-                  )}
                 </div>
               </div>
-              <div className="form-group" style={{ marginBottom: '24px' }}>
-                <label>쿠팡 링크</label>
-                <div style={{ position: 'relative', marginTop: '4px' }}>
+              <div>
+                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '4px' }}>네이버 링크</label>
+                <input
+                  type="text"
+                  value={editForm.naverLink}
+                  onChange={(e) => setEditForm({ ...editForm, naverLink: e.target.value })}
+                  placeholder="https://..."
+                  className="search-input"
+                  style={{ width: '100%', padding: '7px 10px', border: '1px solid var(--border)' }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '4px' }}>쿠팡 링크</label>
+                <input
+                  type="text"
+                  value={editForm.coupangLink}
+                  onChange={(e) => setEditForm({ ...editForm, coupangLink: e.target.value })}
+                  placeholder="https://..."
+                  className="search-input"
+                  style={{ width: '100%', padding: '7px 10px', border: '1px solid var(--border)' }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '4px' }}>오픈마켓 최저가</label>
+                  <input
+                    type="number"
+                    value={editForm.openMarketPrice}
+                    onChange={(e) => setEditForm({ ...editForm, openMarketPrice: e.target.value })}
+                    className="search-input"
+                    style={{ width: '100%', padding: '7px 10px', border: '1px solid var(--border)' }}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '4px' }}>판매처 (G마켓 등)</label>
                   <input
                     type="text"
-                    value={editForm.coupangLink}
-                    onChange={(e) => setEditForm({ ...editForm, coupangLink: e.target.value })}
-                    placeholder="https://..."
+                    value={editForm.openMarketMall}
+                    onChange={(e) => setEditForm({ ...editForm, openMarketMall: e.target.value })}
+                    placeholder="G마켓, 11번가..."
                     className="search-input"
-                    style={{ width: '100%', paddingRight: '28px' }}
+                    style={{ width: '100%', padding: '7px 10px', border: '1px solid var(--border)' }}
                   />
-                  {editForm.coupangLink && (
-                    <button
-                      onClick={() => setEditForm({ ...editForm, coupangLink: '' })}
-                      style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '4px', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                      title="비우기"
-                    >
-                      ✕
-                    </button>
-                  )}
                 </div>
+              </div>
+              <div>
+                <label style={{ fontSize: '0.8rem', display: 'block', marginBottom: '4px' }}>오픈마켓 링크</label>
+                <input
+                  type="text"
+                  value={editForm.openMarketLink}
+                  onChange={(e) => setEditForm({ ...editForm, openMarketLink: e.target.value })}
+                  placeholder="https://..."
+                  className="search-input"
+                  style={{ width: '100%', padding: '7px 10px', border: '1px solid var(--border)' }}
+                />
               </div>
             </div>
 
-            <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '16px', background: '#f1f5f9', padding: '8px', borderRadius: '4px' }}>
-              ℹ️ 저장을 누르시면 해당 상품은 <b>[🔒 수동 고정]</b> 상태가 되어 자동 갱신되지 않습니다.
+            <div style={{ fontSize: '12px', color: '#64748b', margin: '14px 0', background: '#f1f5f9', padding: '8px' }}>
+              ℹ️ 저장 시 <b>[🔒 수동 고정]</b> 상태가 되어 일괄 조회에서 덮어쓰지 않습니다.
             </div>
 
-            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '8px' }}>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
               <button
                 className="btn-secondary"
                 onClick={handleResetOverride}
                 disabled={savingEdit}
                 style={{ marginRight: 'auto', color: '#ef4444', borderColor: '#fca5a5', backgroundColor: '#fef2f2' }}
               >
-                {editingProduct.isManualOverride ? '🔓 고정 해제 (초기화)' : '🔄 전체 비우기 (초기화)'}
+                🔓 초기화
               </button>
               <button className="btn-secondary" onClick={() => setEditingProduct(null)} disabled={savingEdit}>
                 취소
@@ -1541,42 +1981,36 @@ export default function Home() {
           onClick={() => setTuningProduct(null)}
         >
           <div
-            style={{ background: '#fff', padding: '24px', borderRadius: '8px', width: '400px', maxWidth: '90%' }}
+            style={{ background: '#fff', padding: '24px', width: '400px', maxWidth: '90%' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 style={{ marginTop: 0, marginBottom: '12px', fontSize: '1.25rem', fontWeight: 600 }}>검색 키워드 튜닝</h2>
-            <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginBottom: '20px' }}>
-              이름이 길거나 기호가 많아 검색이 안 될 때 키워드를 짧고 명확하게 수정하여 재조회해보세요.
-              <br />
-              <br />
-              (예: <span style={{ color: '#ea4335' }}>포엘리에 옴므 올인원 5In 1 퍼펙트로션 150ml (미백)</span>
-              <br />👉 <span style={{ color: '#16a34a', fontWeight: 'bold' }}>포엘리에 옴므 퍼펙트로션 150ml</span>)
+            <h2 style={{ marginTop: 0, marginBottom: '12px', fontSize: '1.15rem', fontWeight: 600 }}>검색 키워드 수정 재조회</h2>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '16px', lineHeight: 1.5 }}>
+              자동 4단계 정제 이후에도 못 찾은 경우, 핵심 브랜드 + 상품명 + 규격만 남겨서 다시 조회해보세요.
             </p>
-            <div className="form-group" style={{ marginBottom: '20px' }}>
+            <div style={{ marginBottom: '16px' }}>
               <input
                 type="text"
                 value={tuningProduct.keyword}
                 onChange={(e) => setTuningProduct({ ...tuningProduct, keyword: e.target.value })}
                 className="search-input"
-                style={{ width: '100%', padding: '10px', fontSize: '0.95rem' }}
+                style={{ width: '100%', padding: '10px', fontSize: '0.92rem', border: '1px solid var(--border)' }}
                 autoFocus
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && tuningProduct.keyword.trim() !== '') {
-                    checkPrice(tuningProduct.id, tuningProduct.name, tuningProduct.keyword.trim());
+                    checkPrice(tuningProduct.id, tuningProduct.keyword.trim());
                     setTuningProduct(null);
                   }
                 }}
               />
             </div>
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-              <button className="btn-secondary" onClick={() => setTuningProduct(null)}>
-                취소
-              </button>
+              <button className="btn-secondary" onClick={() => setTuningProduct(null)}>취소</button>
               <button
                 className="btn-primary"
                 onClick={() => {
                   if (tuningProduct.keyword.trim() !== '') {
-                    checkPrice(tuningProduct.id, tuningProduct.name, tuningProduct.keyword.trim());
+                    checkPrice(tuningProduct.id, tuningProduct.keyword.trim());
                     setTuningProduct(null);
                   }
                 }}
@@ -1588,143 +2022,55 @@ export default function Home() {
         </div>
       )}
 
-      {/* Settings Modal */}
+      {/* Session & Settings Modal */}
       {showSettings && (
         <div
           style={{
             position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
             backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999,
           }}
-          onClick={() => !savingSettings && setShowSettings(false)}
+          onClick={() => setShowSettings(false)}
         >
           <div
-            style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '8px', width: '400px', maxWidth: '90%', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}
+            style={{ backgroundColor: 'white', padding: '1.75rem', width: '440px', maxWidth: '92%' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 style={{ marginTop: 0, marginBottom: '1rem', fontSize: '1.25rem' }}>환경 설정</h2>
+            <h2 style={{ marginTop: 0, marginBottom: '1rem', fontSize: '1.2rem' }}>🔐 3채널 세션 연결 및 진단</h2>
 
-            <div style={{ fontSize: '0.8rem', color: '#0f766e', backgroundColor: '#f0fdfa', border: '1px solid #ccfbf1', padding: '10px 12px', borderRadius: '4px', marginBottom: '1.25rem', lineHeight: 1.5 }}>
-              ✅ <b>에누리 · 다나와 통합 가격비교 엔진</b>이 기본 적용되어 있어, 별도의 API 키 없이도 모든 카테고리의 최저가를 조회할 수 있습니다.
+            <div style={{ fontSize: '0.82rem', color: '#0f766e', backgroundColor: '#f0fdfa', border: '1px solid #ccfbf1', padding: '10px 12px', marginBottom: '1.2rem', lineHeight: 1.55 }}>
+              <b>오픈마켓(에누리·G마켓·11번가·옥션·롯데ON·다나와)</b>은 별도 설정 없이 즉시 자동 조회됩니다.<br />
+              <b>네이버 쇼핑 · 쿠팡</b>은 앱 내 영구 세션에 1회만 로그인/확인해 두시면 원클릭 조회 성공률이 크게 높아집니다.
             </div>
 
-            <div style={{ marginBottom: '1rem' }}>
-              <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.85rem', fontWeight: 500 }}>
-                네이버 Client ID
-              </label>
-              <input
-                type="text"
-                value={naverClientId}
-                onChange={(e) => setNaverClientId(e.target.value)}
-                style={{ width: '100%', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: '4px' }}
-                placeholder="네이버 오픈 API Client ID 입력"
-              />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '1.25rem' }}>
+              <button
+                className="btn-secondary"
+                onClick={() => openSessionWindow('naver')}
+                style={{ padding: '10px', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 500 }}
+              >
+                <span>🟢 네이버 쇼핑 세션 연결 창 열기</span>
+                <span style={{ fontSize: '0.75rem', color: '#64748b' }}>로그인/확인 →</span>
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => openSessionWindow('coupang')}
+                style={{ padding: '10px', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 500 }}
+              >
+                <span>🔴 쿠팡 세션 연결 창 열기</span>
+                <span style={{ fontSize: '0.75rem', color: '#64748b' }}>로그인/확인 →</span>
+              </button>
             </div>
 
-            <div style={{ marginBottom: '1.5rem' }}>
-              <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.85rem', fontWeight: 500 }}>
-                네이버 Client Secret
-              </label>
-              <input
-                type="password"
-                value={naverClientSecret}
-                onChange={(e) => setNaverClientSecret(e.target.value)}
-                style={{ width: '100%', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: '4px' }}
-                placeholder="네이버 오픈 API Client Secret 입력"
-              />
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
               <button
                 className="btn-secondary"
                 onClick={downloadDiagnostics}
                 style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem', backgroundColor: '#f1f5f9' }}
               >
-                📥 미검색 진단 ({activeMeta.shortLabel})
+                📥 미검색 목록 추출 ({activeMeta.shortLabel})
               </button>
-
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button className="btn-secondary" onClick={() => setShowSettings(false)}>
-                  취소
-                </button>
-                <button className="btn-primary" onClick={saveSettings} disabled={savingSettings}>
-                  {savingSettings ? '저장 중...' : '저장'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Floating Toasts for Active Searches */}
-      {activeSearches.length > 0 && (
-        <div
-          style={{
-            position: 'fixed', bottom: '20px', right: '20px', display: 'flex', flexDirection: 'column', gap: '10px', zIndex: 9999,
-            pointerEvents: 'none',
-          }}
-        >
-          {activeSearches.map((name, idx) => (
-            <div
-              key={`${name}-${idx}`}
-              style={{
-                background: '#1e293b', color: 'white', padding: '12px 20px', borderRadius: '8px',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.15)', display: 'flex', alignItems: 'center', gap: '12px',
-                animation: 'slideIn 0.3s ease-out forwards',
-              }}
-            >
-              <div
-                style={{
-                  width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.3)',
-                  borderTopColor: 'white', borderRadius: '50%', animation: 'spin 1s linear infinite',
-                }}
-              />
-              <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>
-                <span style={{ color: '#60a5fa' }}>{name}</span> 최저가 검색 중...
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Copy Alert Modal */}
-      {copyAlertProduct && (
-        <div
-          style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999,
-          }}
-          onClick={() => setCopyAlertProduct(null)}
-        >
-          <div
-            style={{ background: '#fff', padding: '16px', width: '280px', maxWidth: '90%', textAlign: 'center', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 style={{ margin: '0 0 8px 0', color: '#0f172a', fontSize: '16px', fontWeight: 600 }}>품명 복사 완료</h3>
-            <p style={{ color: '#475569', fontSize: '13px', margin: '0 0 16px 0', wordBreak: 'keep-all' }}>
-              새 창의 검색창에 <b>붙여넣기(Ctrl+V)</b> 하세요.
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <button
-                className="btn-primary"
-                style={{ padding: '10px', borderRadius: '0', fontSize: '14px', fontWeight: 500 }}
-                onClick={() => {
-                  window.open('https://fallcent.com/', '_blank');
-                  setCopyAlertProduct(null);
-                }}
-              >
-                새 창 열기
-              </button>
-              <button
-                className="btn-secondary"
-                style={{ fontSize: '12px', border: 'none', background: 'transparent', color: '#94a3b8', padding: '6px', borderRadius: '0' }}
-                onClick={() => {
-                  const tomorrow = new Date().getTime() + 24 * 60 * 60 * 1000;
-                  localStorage.setItem('hideCopyAlertUntil', tomorrow.toString());
-                  window.open('https://fallcent.com/', '_blank');
-                  setCopyAlertProduct(null);
-                }}
-              >
-                오늘 하루 보지 않기
+              <button className="btn-primary" onClick={() => setShowSettings(false)}>
+                닫기
               </button>
             </div>
           </div>
